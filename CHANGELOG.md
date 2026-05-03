@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [1.1.0](https://github.com/qtsone/opencode-model-tracker/compare/v1.0.1...v1.1.0) (2026-05-03)
+
+
+### Features
+
+* **assignments:** discover agents for dashboard assignments ([b531252](https://github.com/qtsone/opencode-model-tracker/commit/b53125244cae5efc5ba9536ec2bbae4eb7f94d36))
+
 ## [1.0.1](https://github.com/qtsone/opencode-model-tracker/compare/v1.0.0...v1.0.1) (2026-05-03)
 
 
