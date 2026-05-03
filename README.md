@@ -146,27 +146,15 @@ Tests use the Node.js built-in test runner (`node --test`). No additional test f
 
 ## Publishing
 
-CI runs on every pull request and push to `main`. It installs dependencies, fails on high/critical dependency advisories, runs tests, scans for private paths, and validates the package contents with a dry-run.
+The package is published to npm as `opencode-model-tracker`.
 
-The publish workflow uses npm Trusted Publishing (OIDC provenance) configured for the `qtsone/opencode-model-tracker` repository and the `publish.yml` workflow file. The `npm-publish` GitHub Environment protects the publish job with required reviewers and deployment branch rules.
+Releases are automated from Conventional Commits on `main` using semantic-release. npm publishing runs through GitHub Actions with npm Trusted Publishing, so releases include provenance and do not require long-lived npm tokens.
 
-**Live publish** is triggered only by a GitHub release event. **Manual workflow dispatch** performs a dry-run validation only and does not publish.
-
-If npm requires a one-time token to bootstrap the first publish before Trusted Publishing is fully configured, the token must be:
-
-1. Scoped to the `opencode-model-tracker` package only.
-2. Used only for that single bootstrap publish.
-3. Rotated or removed immediately after OIDC provenance is confirmed working.
-
-No `NPM_TOKEN` is needed in steady state once Trusted Publishing is configured.
-
-The checked-in workflow is OIDC-first. If a token bootstrap is unavoidable, use a temporary package-scoped `NODE_AUTH_TOKEN` environment secret for that one publish or publish manually from a trusted maintainer machine, then remove the token path before the next release.
+Maintainers should create release commits using Conventional Commit messages (`feat:`, `fix:`, etc.); semantic-release determines the next version and publishes it automatically.
 
 ## Release status
 
-The package starts at version `0.1.0`. The npm package name `opencode-model-tracker` was available and not yet published (E404) on 2026-05-03 before the initial publish.
-
-Once the first GitHub release is published and the npm package is available, prefer installing from npm rather than from source.
+The package is published on npm as `opencode-model-tracker`.
 
 ## Troubleshooting
 
