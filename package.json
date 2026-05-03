@@ -22,7 +22,8 @@
     "sqlite"
   ],
   "exports": {
-    ".": "./src/index.js"
+    ".": "./src/index.js",
+    "./server": "./src/index.js"
   },
   "files": [
     "src",
