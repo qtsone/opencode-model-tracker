@@ -1,9 +1,17 @@
 name: Publish
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to publish, usually a release tag such as v1.0.0.
+        required: true
+        type: string
+      publish:
+        description: Set true to publish to npm. False runs validation and dry-run only.
+        default: false
+        required: true
+        type: boolean
 
 permissions:
   contents: read
@@ -23,6 +31,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -50,7 +60,7 @@ jobs:
         run: npm publish --dry-run --access public
 
       - name: Publish to npm
-        if: ${{ github.event_name == 'release' }}
+        if: ${{ inputs.publish == true }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance

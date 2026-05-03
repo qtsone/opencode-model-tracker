@@ -4,18 +4,72 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      new_release_published: ${{ steps.semantic_release.outputs.new_release_published }}
+      new_release_version: ${{ steps.semantic_release.outputs.new_release_version }}
     steps:
       - name: Semantic Release
+        id: semantic_release
         uses: qts-cloud/actions/release@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           ssh-key: ${{ secrets.DEPLOY_KEY }}
           node-version: '24'
+
+  publish:
+    name: Publish npm package
+    needs: release
+    if: ${{ needs.release.outputs.new_release_published == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.release.outputs.new_release_version }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit for high severity vulnerabilities
+        run: npm run audit:high
+
+      - name: Run tests
+        run: npm test
+
+      - name: Scan for private paths
+        run: npm run check:private-paths
+
+      - name: Validate package contents
+        run: npm run pack:dry-run
+
+      - name: Publish dry run
+        run: npm publish --dry-run --access public
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --provenance
