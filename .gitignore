@@ -1,0 +1,17 @@
+node_modules/
+npm-debug.log*
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
+*.sqlite
+*.sqlite-*
+model-performance.json
+model-performance.sqlite
+models.json
+docs/superpowers/
+coverage/
+dist/
+.tmp/
+.cache/

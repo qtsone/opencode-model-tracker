@@ -1,0 +1,218 @@
+{
+  "models": {
+    "openai/gpt-5.3-codex": {
+      "provider": "openai",
+      "name": "GPT-5.3 Codex",
+      "context_window": 400000,
+      "cost": {
+        "input_per_1m": 1.75,
+        "cache_read_per_1m": 0.175,
+        "cache_write_per_1m": 1.75,
+        "output_per_1m": 14
+      },
+      "strengths": [
+        "planning and orchestration",
+        "architecture decisions",
+        "long-context investigation",
+        "code generation and refactoring",
+        "analytical reasoning"
+      ]
+    },
+    "github-copilot/gpt-5.3-codex": {
+      "provider": "github-copilot",
+      "name": "GPT-5.3 Codex (Copilot)",
+      "context_window": 400000,
+      "cost": {
+        "input_per_1m": 1.75,
+        "cache_read_per_1m": 0.175,
+        "cache_write_per_1m": 1.75,
+        "output_per_1m": 14
+      },
+      "strengths": [
+        "planning",
+        "code generation"
+      ],
+      "notes": "Prefer openai/gpt-5.3-codex for the larger context window."
+    },
+    "github-copilot/gpt-5.4-mini": {
+      "provider": "github-copilot",
+      "name": "GPT-5.4 Mini (Copilot)",
+      "context_window": 400000,
+      "cost": {
+        "input_per_1m": 0.75,
+        "cache_read_per_1m": 0.075,
+        "cache_write_per_1m": 0.75,
+        "output_per_1m": 4.5
+      },
+      "strengths": [
+        "lightweight exploration",
+        "compact summarization",
+        "low-latency tool orchestration"
+      ]
+    },
+    "github-copilot/gpt-4o": {
+      "provider": "github-copilot",
+      "name": "GPT-4o (Copilot)",
+      "context_window": 128000,
+      "cost": {
+        "input_per_1m": "free",
+        "output_per_1m": "free"
+      },
+      "strengths": [
+        "fast structured output",
+        "code review",
+        "read-only exploration",
+        "lightweight investigation"
+      ]
+    },
+    "github-copilot/gpt-5-mini": {
+      "provider": "github-copilot",
+      "name": "GPT-5 Mini (Copilot)",
+      "context_window": 192000,
+      "cost": {
+        "input_per_1m": "free",
+        "output_per_1m": "free"
+      },
+      "strengths": [
+        "lightweight housekeeping",
+        "structured formatting",
+        "minimal tool use"
+      ]
+    },
+    "github-copilot/claude-sonnet-4.6": {
+      "provider": "github-copilot",
+      "name": "Claude Sonnet 4.6 (Copilot)",
+      "context_window": 160000,
+      "cost": {
+        "input_per_1m": 3,
+        "cache_read_per_1m": 0.3,
+        "cache_write_per_1m": 3.75,
+        "cache_write_5m_per_1m": 3.75,
+        "cache_write_1h_per_1m": 6,
+        "output_per_1m": 15
+      },
+      "strengths": [
+        "targeted code implementation",
+        "refactoring",
+        "infrastructure-as-code",
+        "long-form writing and documentation",
+        "sustained multi-step task execution"
+      ]
+    },
+    "github-copilot/claude-opus-4.7": {
+      "provider": "github-copilot",
+      "name": "Claude Opus 4.7 (Copilot)",
+      "context_window": 192000,
+      "cost": {
+        "input_per_1m": 5,
+        "cache_read_per_1m": 0.5,
+        "cache_write_per_1m": 6.25,
+        "cache_write_5m_per_1m": 6.25,
+        "cache_write_1h_per_1m": 10,
+        "output_per_1m": 25
+      },
+      "strengths": [
+        "deep planning and reasoning",
+        "complex requirements elicitation",
+        "nuanced long-form writing"
+      ],
+      "notes": "Expensive (~15x Sonnet). Reserved for A/B testing and high-stakes planning tasks where reasoning quality is demonstrably better."
+    },
+    "github-copilot/claude-haiku-4.5": {
+      "provider": "github-copilot",
+      "name": "Claude Haiku 4.5 (Copilot)",
+      "context_window": 160000,
+      "cost": {
+        "input_per_1m": 1,
+        "cache_read_per_1m": 0.1,
+        "cache_write_per_1m": 1.25,
+        "cache_write_5m_per_1m": 1.25,
+        "cache_write_1h_per_1m": 2,
+        "output_per_1m": 5
+      },
+      "strengths": [
+        "fast, lightweight tasks",
+        "structured extraction",
+        "low-latency tool use"
+      ],
+      "notes": "Good alternative to gpt-5-mini for structured output tasks."
+    },
+    "github-copilot/gemini-3.1-pro-preview": {
+      "provider": "github-copilot",
+      "name": "Gemini 3.1 Pro Preview (Copilot)",
+      "context_window": 173000,
+      "cost": {
+        "input_per_1m": 1.02,
+        "output_per_1m": 12.03
+      },
+      "strengths": [
+        "strong reasoning",
+        "very long context",
+        "search and synthesis"
+      ],
+      "notes": "Preview model — A/B candidate for technical-lead or systems-architect."
+    },
+    "ollama/qwen3-coder": {
+      "provider": "ollama",
+      "name": "Qwen3 Coder 30B (local)",
+      "context_window": 32000,
+      "cost": {
+        "input_per_1m": 0,
+        "output_per_1m": 0
+      },
+      "strengths": [
+        "zero cost",
+        "offline / air-gapped use",
+        "code generation"
+      ],
+      "notes": "Requires local Ollama instance at http://localhost:11434."
+    },
+    "openai/gpt-5.5": {
+      "provider": "openai",
+      "name": "gpt-5.5",
+      "context_window": 500000,
+      "cost": {
+        "input_per_1m": 5,
+        "cache_read_per_1m": 0.5,
+        "cache_write_per_1m": 5,
+        "output_per_1m": 30
+      },
+      "strengths": [
+        "agentic workloads"
+      ],
+      "notes": ""
+    }
+  },
+  "agent_assignments": {
+    "technical-lead": "openai/gpt-5.5",
+    "tpm": "openai/gpt-5.5",
+    "systems-architect": "openai/gpt-5.5",
+    "security-engineer": "github-copilot/claude-sonnet-4.6",
+    "backend-engineer": "github-copilot/claude-sonnet-4.6",
+    "devops-engineer": "github-copilot/claude-sonnet-4.6",
+    "qa": "github-copilot/claude-sonnet-4.6",
+    "task-resolver": "openai/gpt-5.3-codex",
+    "task-refiner": "openai/gpt-5.3-codex",
+    "issue-reporter": "openai/gpt-5.3-codex",
+    "plan": "openai/gpt-5.5",
+    "build": "openai/gpt-5.3-codex",
+    "explore": "openai/gpt-5.3-codex",
+    "title": "github-copilot/gpt-4o",
+    "summary": "github-copilot/gpt-5.4-mini",
+    "compaction": "github-copilot/gpt-5.4-mini"
+  },
+  "ab_test_candidates": {
+    "technical-lead": [
+      "github-copilot/gemini-3.1-pro-preview"
+    ],
+    "tpm": [
+      "github-copilot/claude-opus-4.7"
+    ],
+    "qa": [
+      "openai/gpt-5.3-codex"
+    ],
+    "issue-reporter": [
+      "github-copilot/claude-haiku-4.5"
+    ]
+  }
+}
