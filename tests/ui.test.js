@@ -1126,6 +1126,136 @@ test("renderAgents uses colspan 10 for empty/error rows", () => {
 });
 
 
+// ─── Task 3: /api/agents integration ─────────────────────────────────────────
+
+test("loadAssignments fetches /api/agents", () => {
+  const src = extractFn("loadAssignments");
+  assert.ok(
+    src.includes("/api/agents"),
+    "loadAssignments must fetch /api/agents"
+  );
+});
+
+test("script declares _agents global variable", () => {
+  assert.ok(
+    SCRIPT.includes("var _agents"),
+    "script must declare _agents global variable to store discovered agents"
+  );
+});
+
+test("loadAssignments stores agentsResponse.agents into _agents", () => {
+  const src = extractFn("loadAssignments");
+  assert.ok(
+    src.includes("_agents") && (src.includes(".agents") || src.includes("agents ||")),
+    "loadAssignments must store discovered agents into _agents"
+  );
+});
+
+test("renderAssignments iterates _agents, not Object.entries(assignments)", () => {
+  const src = extractFn("renderAssignments");
+  // Must iterate _agents
+  assert.ok(
+    src.includes("_agents"),
+    "renderAssignments must reference _agents as row source"
+  );
+  // Must NOT use Object.entries on assignments as the row source
+  assert.ok(
+    !src.includes("Object.entries(assignments)"),
+    "renderAssignments must not use Object.entries(assignments) to build rows"
+  );
+});
+
+test("renderAssignments renders source label opencode.json for opencode source", () => {
+  const src = extractFn("renderAssignments");
+  assert.ok(
+    src.includes("opencode.json"),
+    "renderAssignments must render 'opencode.json' label for agents with source='opencode'"
+  );
+});
+
+test("renderAssignments renders source label agent file for custom source", () => {
+  const src = extractFn("renderAssignments");
+  assert.ok(
+    src.includes("agent file"),
+    "renderAssignments must render 'agent file' label for agents with source='custom'"
+  );
+});
+
+test("renderAssignments renders agent.target in row", () => {
+  const src = extractFn("renderAssignments");
+  assert.ok(
+    src.includes("agent.target"),
+    "renderAssignments must render agent.target field in each row"
+  );
+});
+
+test("empty state says No discovered agents, not No assignments", () => {
+  const src = extractFn("renderAssignments");
+  assert.ok(
+    src.includes("No discovered agents"),
+    "renderAssignments empty state must say 'No discovered agents'"
+  );
+  assert.ok(
+    !src.includes("No assignments"),
+    "renderAssignments empty state must not say 'No assignments'"
+  );
+});
+
+test("model select includes a placeholder Select model option", () => {
+  const src = extractFn("renderAssignments");
+  assert.ok(
+    src.includes("Select model"),
+    "renderAssignments must include a 'Select model…' placeholder option in the model select"
+  );
+});
+
+test("onAssignChange initializes _pendingAssignments from _agents, not full registry assignments", () => {
+  const src = extractFn("onAssignChange");
+  // Must NOT clone _registry.agent_assignments wholesale
+  assert.ok(
+    !src.includes("JSON.parse(JSON.stringify(_registry.agent_assignments))"),
+    "onAssignChange must not initialize _pendingAssignments from _registry.agent_assignments"
+  );
+  // Must reference _agents to build initial pending state
+  assert.ok(
+    src.includes("_agents"),
+    "onAssignChange must initialize _pendingAssignments from _agents (discovered agents only)"
+  );
+});
+
+test("applyAssignments sends only discovered agent assignments, not _registry.agent_assignments wholesale", () => {
+  const src = extractFn("applyAssignments");
+  // Must not fall back to _registry.agent_assignments
+  assert.ok(
+    !src.includes("_registry.agent_assignments"),
+    "applyAssignments must not send _registry.agent_assignments (would include stale registry-only keys)"
+  );
+  // Must derive payload from _agents or _pendingAssignments built from discovered agents
+  assert.ok(
+    src.includes("_agents") || src.includes("_pendingAssignments"),
+    "applyAssignments must derive payload from _agents or _pendingAssignments (discovered agents)"
+  );
+});
+
+test("applyAssignments excludes empty placeholder selections", () => {
+  const src = extractFn("applyAssignments");
+  // Must filter out falsy/empty model values
+  assert.ok(
+    src.includes('!= ""') || src.includes("!== \"\"") || src.includes("v &&") || src.includes("val &&") || src.includes(".filter("),
+    "applyAssignments must filter out empty placeholder selections before sending"
+  );
+});
+
+test("renderAssignments reads selected model from pending assignment, then registry, then agent.model", () => {
+  const src = extractFn("renderAssignments");
+  assert.ok(
+    src.includes("agent.model"),
+    "renderAssignments must fall back to agent.model when no pending or registry assignment exists"
+  );
+});
+
+// ─── rowAgentLabel ────────────────────────────────────────────────────────────
+
 test("rowAgentLabel renders agent-pill badge; sub-pill when sub_agents are present", () => {
   const rowAgentLabel = makeRowAgentLabelFn();
 
@@ -1153,4 +1283,31 @@ test("rowAgentLabel renders agent-pill badge; sub-pill when sub_agents are prese
   const xssHtml = rowAgentLabel({ agent: 'a', sub_agents: ['<script>alert(1)</script>'] });
   assert.ok(!xssHtml.includes('<script>'), 'raw <script> tag must not appear in output');
   assert.ok(xssHtml.includes('&lt;script&gt;'), 'angle brackets must be HTML-entity-escaped');
+});
+
+// ─── Task 3: assignments table header must have 6 columns including Source ────
+
+test("assignments table header includes Source column between Agent and Registry Model", () => {
+  // renderAssignments emits 6 cells per row: Agent, Source, Registry Model (select),
+  // File Model (current), Target, Status. The static <thead> must match.
+  const theadMatch = UI_HTML.match(/<thead>\s*<tr>([\s\S]*?)<\/tr>\s*<\/thead>\s*<tbody id="assign-body">/);
+  assert.ok(theadMatch, "assignments table must have a <thead> before assign-body tbody");
+  const theadRow = theadMatch[1];
+  assert.ok(
+    theadRow.includes("Source"),
+    "assignments table header must include a 'Source' column"
+  );
+});
+
+test("assignments table header error colspan is 6 not 5", () => {
+  // The catch handler in loadAssignments must use colspan="6" to match the 6-column layout.
+  const src = extractFn("loadAssignments");
+  assert.ok(
+    src.includes('colspan="6"'),
+    "loadAssignments error row must use colspan=\"6\" (6 columns including Source)"
+  );
+  assert.ok(
+    !src.includes('colspan="5"'),
+    "loadAssignments error row must not use the old colspan=\"5\""
+  );
 });

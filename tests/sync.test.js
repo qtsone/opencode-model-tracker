@@ -4,7 +4,8 @@ import { test } from "node:test";
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { getSyncStatus, applyRegistryAssignments } from "../src/sync.js";
+import { getSyncStatus, applyRegistryAssignments, discoverAssignableAgents, SAFE_AGENT_NAME_RE, isSafeAgentName } from "../src/sync.js";
+import { symlinkSync, statSync } from "fs";
 
 const BUILTIN_AGENTS = new Set(["plan", "build", "explore", "general", "title", "summary", "compaction"]);
 
@@ -403,6 +404,292 @@ test("applyRegistryAssignments: does not match model: key without whitespace sep
       !updated.includes("model: old/model"),
       "old model: value must be gone"
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ─── SAFE_AGENT_NAME_RE and isSafeAgentName ───────────────────────────────────
+
+test("isSafeAgentName: accepts valid names", () => {
+  assert.equal(isSafeAgentName("backend-engineer"), true);
+  assert.equal(isSafeAgentName("plan"), true);
+  assert.equal(isSafeAgentName("My_Agent-123"), true);
+  assert.equal(isSafeAgentName("a".repeat(64)), true);
+});
+
+test("isSafeAgentName: rejects unsafe names", () => {
+  assert.equal(isSafeAgentName(""), false);
+  assert.equal(isSafeAgentName("../escape"), false);
+  assert.equal(isSafeAgentName("has space"), false);
+  assert.equal(isSafeAgentName("a".repeat(65)), false);
+  assert.equal(isSafeAgentName("with/slash"), false);
+  assert.equal(isSafeAgentName("with.dot"), false);
+});
+
+// ─── discoverAssignableAgents ─────────────────────────────────────────────────
+
+test("discoverAssignableAgents: returns safe opencode and custom agents sorted with source metadata", () => {
+  const dir = mkdtempSync(join(tmpdir(), "discover-basic-"));
+  try {
+    const agentDir = join(dir, "agent");
+    mkdirSync(agentDir);
+
+    writeFileSync(join(agentDir, "zebra-agent.md"), [
+      "---",
+      "model: custom/model-z",
+      "---",
+      "body",
+    ].join("\n") + "\n");
+
+    writeFileSync(join(agentDir, "alpha-agent.md"), [
+      "---",
+      "model: custom/model-a",
+      "---",
+      "body",
+    ].join("\n") + "\n");
+
+    const opencodePath = join(dir, "opencode.json");
+    writeFileSync(opencodePath, JSON.stringify({ agent: { plan: { model: "builtin/plan-model" } } }, null, 2));
+
+    const builtins = new Set(["plan"]);
+    const result = discoverAssignableAgents(agentDir, opencodePath, builtins);
+
+    // Must be sorted by name
+    const names = result.map(r => r.name);
+    assert.deepStrictEqual(names, [...names].sort());
+
+    // Each entry has required shape
+    for (const entry of result) {
+      assert.ok(typeof entry.name === "string");
+      assert.ok(entry.source === "custom" || entry.source === "opencode");
+      assert.ok(entry.model === null || typeof entry.model === "string");
+      assert.ok(typeof entry.target === "string");
+    }
+
+    const alpha = result.find(r => r.name === "alpha-agent");
+    assert.ok(alpha, "alpha-agent must be in results");
+    assert.equal(alpha.source, "custom");
+    assert.equal(alpha.model, "custom/model-a");
+    assert.equal(alpha.target, "agent/alpha-agent.md");
+
+    const planEntry = result.find(r => r.name === "plan");
+    assert.ok(planEntry, "plan must be in results");
+    assert.equal(planEntry.source, "opencode");
+    assert.equal(planEntry.model, "builtin/plan-model");
+    assert.equal(planEntry.target, "opencode.json");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("discoverAssignableAgents: prefers opencode source when same agent appears in both", () => {
+  const dir = mkdtempSync(join(tmpdir(), "discover-overlap-"));
+  try {
+    const agentDir = join(dir, "agent");
+    mkdirSync(agentDir);
+
+    // plan.md exists as a custom file but plan is also a builtin
+    writeFileSync(join(agentDir, "plan.md"), [
+      "---",
+      "model: custom/plan-model",
+      "---",
+    ].join("\n") + "\n");
+
+    const opencodePath = join(dir, "opencode.json");
+    writeFileSync(opencodePath, JSON.stringify({ agent: { plan: { model: "builtin/plan-model" } } }, null, 2));
+
+    const builtins = new Set(["plan"]);
+    const result = discoverAssignableAgents(agentDir, opencodePath, builtins);
+
+    const planEntries = result.filter(r => r.name === "plan");
+    assert.equal(planEntries.length, 1, "plan must appear only once");
+    assert.equal(planEntries[0].source, "opencode", "opencode source must win");
+    assert.equal(planEntries[0].target, "opencode.json");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("discoverAssignableAgents: ignores unsafe custom filenames and unsafe builtin names", () => {
+  const dir = mkdtempSync(join(tmpdir(), "discover-unsafe-"));
+  try {
+    const agentDir = join(dir, "agent");
+    mkdirSync(agentDir);
+
+    // Unsafe custom filename: contains dots
+    writeFileSync(join(agentDir, "bad.name.md"), "---\nmodel: x\n---\n");
+    // Safe custom filename
+    writeFileSync(join(agentDir, "good-agent.md"), "---\nmodel: good/model\n---\n");
+
+    const opencodePath = join(dir, "opencode.json");
+    writeFileSync(opencodePath, JSON.stringify({ agent: {} }, null, 2));
+
+    // Unsafe builtin name included
+    const builtins = new Set(["plan", "../evil", "good with spaces"]);
+    const result = discoverAssignableAgents(agentDir, opencodePath, builtins);
+
+    const names = result.map(r => r.name);
+    assert.ok(!names.includes("bad.name"), "unsafe custom filename must be excluded");
+    assert.ok(!names.includes("../evil"), "unsafe builtin name must be excluded");
+    assert.ok(!names.includes("good with spaces"), "unsafe builtin name with spaces must be excluded");
+    assert.ok(names.includes("good-agent"), "safe custom agent must be included");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("discoverAssignableAgents: handles missing agentDir gracefully", () => {
+  const dir = mkdtempSync(join(tmpdir(), "discover-nodir-"));
+  try {
+    const opencodePath = join(dir, "opencode.json");
+    writeFileSync(opencodePath, JSON.stringify({ agent: { plan: { model: "m" } } }, null, 2));
+
+    const result = discoverAssignableAgents(join(dir, "nonexistent"), opencodePath, new Set(["plan"]));
+    // Must not throw; builtin agents still returned
+    const planEntry = result.find(r => r.name === "plan");
+    assert.ok(planEntry, "builtin agents still returned when agentDir missing");
+    assert.equal(planEntry.source, "opencode");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("discoverAssignableAgents: ignores custom symlink escaping agentDir and oversized markdown files", () => {
+  const dir = mkdtempSync(join(tmpdir(), "discover-sec-"));
+  try {
+    const agentDir = join(dir, "agent");
+    mkdirSync(agentDir);
+
+    // Oversized file (> 1 MiB)
+    const bigContent = "---\nmodel: big/model\n---\n" + "x".repeat(1024 * 1024 + 1);
+    writeFileSync(join(agentDir, "big-agent.md"), bigContent);
+
+    // Normal agent that should appear
+    writeFileSync(join(agentDir, "normal-agent.md"), "---\nmodel: good/model\n---\n");
+
+    const opencodePath = join(dir, "opencode.json");
+    writeFileSync(opencodePath, JSON.stringify({ agent: {} }, null, 2));
+
+    // Try to create a symlink escaping agentDir
+    let symlinkCreated = false;
+    try {
+      const outsideFile = join(dir, "secret.md");
+      writeFileSync(outsideFile, "---\nmodel: leaked\n---\n");
+      symlinkSync(outsideFile, join(agentDir, "escape-agent.md"));
+      symlinkCreated = true;
+    } catch {
+      // Symlink creation not supported; skip that assertion
+    }
+
+    const result = discoverAssignableAgents(agentDir, opencodePath, new Set());
+    const names = result.map(r => r.name);
+
+    assert.ok(!names.includes("big-agent"), "oversized file must be excluded");
+    assert.ok(names.includes("normal-agent"), "normal agent must be included");
+
+    if (symlinkCreated) {
+      assert.ok(!names.includes("escape-agent"), "symlink escaping agentDir must be excluded");
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ─── P2-2: replaceModelLine must not expand $ replacement patterns ────────────
+
+test("applyRegistryAssignments: model ID containing $ replacement patterns is written verbatim", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sync-dollar-model-"));
+  try {
+    const agentDir = join(dir, "agent");
+    mkdirSync(agentDir);
+
+    writeFileSync(join(agentDir, "dollar-agent.md"), [
+      "---",
+      "model: old/model",
+      "---",
+      "Body.",
+    ].join("\n") + "\n");
+    writeFileSync(join(dir, "opencode.json"), JSON.stringify({ agent: {} }, null, 2));
+
+    // Model IDs containing $& and $` are valid replacement pattern characters
+    // in String.prototype.replace; without a replacer function they would expand.
+    const assignments = { "dollar-agent": "weird/$&model" };
+    applyRegistryAssignments(assignments, agentDir, join(dir, "opencode.json"), new Set());
+
+    const updated = readFileSync(join(agentDir, "dollar-agent.md"), "utf-8");
+    assert.ok(
+      updated.includes("model: weird/$&model"),
+      `model value must be written verbatim; got:\n${updated}`
+    );
+    assert.ok(!updated.includes("model: old/model"), "old model value must be gone");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ─── P2-3: apply stage size guard for custom agent file ───────────────────────
+
+test("applyRegistryAssignments: rejects oversized custom agent file during apply without mutation", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sync-apply-oversize-"));
+  try {
+    const agentDir = join(dir, "agent");
+    mkdirSync(agentDir);
+
+    // Safe name but content over 1 MiB — write enough to exceed the 1 MiB guard
+    const header = "---\nmodel: old/model\n---\n";
+    const body = "x".repeat(1024 * 1024 + 1);
+    const originalContent = header + body;
+    writeFileSync(join(agentDir, "big-apply-agent.md"), originalContent);
+    writeFileSync(join(dir, "opencode.json"), JSON.stringify({ agent: {} }, null, 2));
+
+    const assignments = { "big-apply-agent": "new/model" };
+
+    assert.throws(
+      () => applyRegistryAssignments(assignments, agentDir, join(dir, "opencode.json"), new Set()),
+      (err) => {
+        assert.ok(typeof err.message === "string" && err.message.length > 0, "Must have an error message");
+        return true;
+      },
+      "Must throw when custom agent file exceeds 1 MiB during apply stage"
+    );
+
+    // File must not have been mutated
+    const afterContent = readFileSync(join(agentDir, "big-apply-agent.md"), "utf-8");
+    assert.equal(afterContent, originalContent, "Oversized file must not be mutated");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ─── applyRegistryAssignments: reject unsafe agent names ─────────────────────
+
+test("applyRegistryAssignments: rejects unsafe agent names before writing outside agentDir", () => {
+  const dir = mkdtempSync(join(tmpdir(), "apply-unsafe-name-"));
+  try {
+    const agentDir = join(dir, "agent");
+    mkdirSync(agentDir);
+    writeFileSync(join(dir, "opencode.json"), JSON.stringify({ agent: {} }, null, 2));
+
+    // Unsafe agent name that could be a path traversal
+    const assignments = { "../escape": "some/model" };
+
+    assert.throws(
+      () => applyRegistryAssignments(assignments, agentDir, join(dir, "opencode.json"), new Set()),
+      (err) => {
+        assert.ok(typeof err.message === "string" && err.message.length > 0);
+        return true;
+      },
+      "Must throw when an unsafe agent name is in assignments"
+    );
+
+    // Ensure no file was created outside agentDir
+    try {
+      statSync(join(dir, "escape.md"));
+      assert.fail("escape.md must not have been created outside agentDir");
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

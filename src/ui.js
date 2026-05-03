@@ -6,6 +6,7 @@ function buildScript(token) {
   return `
 var _registry = null;
 var _syncStatus = null;
+var _agents = [];
 var _editingModelId = null;
 var _isNewModel = false;
 var _pendingAssignments = null;
@@ -200,36 +201,44 @@ function deleteModel() {
 }
 
 function loadAssignments() {
-  Promise.all([apiFetch('/api/registry'), apiFetch('/api/sync-status')]).then(function(results) {
+  Promise.all([apiFetch('/api/registry'), apiFetch('/api/sync-status'), apiFetch('/api/agents')]).then(function(results) {
     _registry = results[0];
     _syncStatus = results[1];
+    _agents = (results[2] && results[2].agents) || [];
     _pendingAssignments = null;
     renderAssignments();
   }).catch(function(e) {
-    document.getElementById('assign-body').innerHTML = '<tr><td colspan="5" class="empty">Error loading assignments: ' + esc(e.message) + '</td></tr>';
+    document.getElementById('assign-body').innerHTML = '<tr><td colspan="6" class="empty">Error loading assignments: ' + esc(e.message) + '</td></tr>';
   });
 }
 
 function renderAssignments() {
-  var assignments = _pendingAssignments || (_registry && _registry.agent_assignments) || {};
+  var regAssignments = (_registry && _registry.agent_assignments) || {};
   var drift = (_syncStatus && _syncStatus.drift) || [];
   var driftMap = {};
   drift.forEach(function(d) { driftMap[d.agent] = d; });
   var models = Object.keys((_registry && _registry.models) || {});
 
-  var rows = Object.entries(assignments).map(function(entry) {
-    var agent = entry[0]; var regModel = entry[1];
-    var d = driftMap[agent];
-    var actual = d ? d.actual : regModel;
+  var rows = _agents.map(function(agent) {
+    var agentName = agent.name;
+    var pending = _pendingAssignments && Object.prototype.hasOwnProperty.call(_pendingAssignments, agentName)
+      ? _pendingAssignments[agentName] : null;
+    var regModel = regAssignments[agentName] || null;
+    var selectedModel = pending !== null ? pending : (regModel || (models.indexOf(agent.model) !== -1 ? agent.model : ''));
+    var d = driftMap[agentName];
+    var actual = d ? d.actual : (agent.model || '—');
     var isDrift = !!d;
-    var opts = models.map(function(m) {
-      return '<option value="' + esc(m) + '"' + (regModel === m ? ' selected' : '') + '>' + esc(m) + '</option>';
+    var sourceLabel = agent.source === 'opencode' ? 'opencode.json' : 'agent file';
+    var placeholder = '<option value="" disabled' + (selectedModel ? '' : ' selected') + '>Select model\u2026</option>';
+    var opts = placeholder + models.map(function(m) {
+      return '<option value="' + esc(m) + '"' + (selectedModel === m ? ' selected' : '') + '>' + esc(m) + '</option>';
     }).join('');
     return '<tr class="' + (isDrift ? 'drift' : '') + '">' +
-      '<td><span class="badge">' + esc(agent) + '</span></td>' +
-      '<td><select class="assignment-sel" data-agent="' + esc(agent) + '">' + opts + '</select></td>' +
-      '<td><code>' + esc(actual || '—') + '</code></td>' +
-      '<td style="font-size:.75rem;color:#94a3b8">' + esc((d && d.target) || '—') + '</td>' +
+      '<td><span class="badge">' + esc(agentName) + '</span></td>' +
+      '<td><span class="badge badge-dim">' + esc(sourceLabel) + '</span></td>' +
+      '<td><select class="assignment-sel" data-agent="' + esc(agentName) + '">' + opts + '</select></td>' +
+      '<td><code>' + esc(actual) + '</code></td>' +
+      '<td style="font-size:.75rem;color:#94a3b8">' + esc(agent.target || (d && d.target) || '—') + '</td>' +
       '<td>' + (isDrift
         ? '<span class="badge badge-warn">drift</span>'
         : '<span class="badge" style="background:#14532d;color:#86efac">ok</span>') + '</td>' +
@@ -238,7 +247,7 @@ function renderAssignments() {
 
   document.getElementById('assign-body').innerHTML = rows.length
     ? rows.join('')
-    : '<tr><td colspan="5" class="empty">No assignments</td></tr>';
+    : '<tr><td colspan="6" class="empty">No discovered agents</td></tr>';
 
   document.getElementById('assign-body').querySelectorAll('select[data-agent]').forEach(function(sel) {
     sel.addEventListener('change', function() { onAssignChange(sel.dataset.agent, sel.value); });
@@ -256,14 +265,29 @@ function renderAssignments() {
   }
 }
 
-function onAssignChange(agent, newModel) {
-  if (!_pendingAssignments) _pendingAssignments = JSON.parse(JSON.stringify(_registry.agent_assignments));
-  _pendingAssignments[agent] = newModel;
+function onAssignChange(agentName, newModel) {
+  if (!_pendingAssignments) {
+    var regAssignments = (_registry && _registry.agent_assignments) || {};
+    _pendingAssignments = {};
+    _agents.forEach(function(agent) {
+      _pendingAssignments[agent.name] = regAssignments[agent.name] || agent.model || '';
+    });
+  }
+  _pendingAssignments[agentName] = newModel;
   renderAssignments();
 }
 
 function applyAssignments() {
-  var assignments = _pendingAssignments || _registry.agent_assignments;
+  var reg = _registry || {};
+  var regAssignments = reg.agent_assignments || {};
+  var source = _pendingAssignments || {};
+  var assignments = {};
+  _agents.forEach(function(agent) {
+    var val = Object.prototype.hasOwnProperty.call(source, agent.name)
+      ? source[agent.name]
+      : (regAssignments[agent.name] || agent.model || '');
+    if (val && val !== '') assignments[agent.name] = val;
+  });
   adminFetch('/api/apply', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1035,7 +1059,7 @@ const HTML_SHELL_PREFIX = /* html */`<!DOCTYPE html>
     <p style="font-size:.8rem;color:#94a3b8;margin-bottom:1rem">Drift rows are highlighted. Click Apply to sync changes to agent files and opencode.json.</p>
     <div id="sync-status-msg" style="font-size:.82rem;margin-bottom:.75rem;color:#94a3b8"></div>
     <table>
-      <thead><tr><th>Agent</th><th>Registry Model</th><th>File Model</th><th>Target</th><th>Status</th></tr></thead>
+      <thead><tr><th>Agent</th><th>Source</th><th>Registry Model</th><th>File Model</th><th>Target</th><th>Status</th></tr></thead>
       <tbody id="assign-body"></tbody>
     </table>
   </section>

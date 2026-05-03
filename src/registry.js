@@ -1,5 +1,6 @@
 // src/registry.js
 import { readFileSync, writeFileSync, renameSync, unlinkSync, existsSync } from "node:fs";
+import { isSafeAgentName } from "./sync.js";
 
 const REQUIRED_MODEL_FIELDS = ["provider", "name", "context_window", "cost", "strengths"];
 const OPTIONAL_CACHE_COST_FIELDS = [
@@ -86,6 +87,11 @@ export function validateRegistry(registry) {
 
   // Validate model entries
   for (const [id, model] of Object.entries(registry.models)) {
+    if (/[\r\n]/.test(id)) {
+      errors.push(`Model ID contains illegal newline or carriage-return characters (control characters not allowed in model IDs).`);
+      continue;
+    }
+
     for (const field of REQUIRED_MODEL_FIELDS) {
       if (model[field] === undefined || model[field] === null) {
         errors.push(`Model '${id}' is missing required field '${field}'.`);
@@ -136,6 +142,10 @@ export function validateRegistry(registry) {
 
   // Validate assignments reference known models
   for (const [agent, modelId] of Object.entries(registry.agent_assignments)) {
+    if (!isSafeAgentName(agent)) {
+      errors.push(`Assignment key '${agent}' is an unsafe agent name. Names must match /^[a-zA-Z0-9_-]{1,64}$/.`);
+      continue;
+    }
     if (!registry.models[modelId]) {
       errors.push(`Assignment for '${agent}' references unknown model '${modelId}'.`);
     }
@@ -143,6 +153,10 @@ export function validateRegistry(registry) {
 
   // Validate A/B candidates reference known models
   for (const [agent, candidates] of Object.entries(registry.ab_test_candidates)) {
+    if (!isSafeAgentName(agent)) {
+      errors.push(`A/B candidate key '${agent}' is an unsafe agent name. Names must match /^[a-zA-Z0-9_-]{1,64}$/.`);
+      continue;
+    }
     if (!Array.isArray(candidates)) {
       errors.push(`ab_test_candidates['${agent}'] must be an array.`);
       continue;

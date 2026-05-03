@@ -272,3 +272,98 @@ test("validateRegistry errors on model missing provider field", () => {
   const errors = validateRegistry(reg);
   assert.ok(errors.some(e => /provider/.test(e)));
 });
+
+// ─── isSafeAgentName validation in validateRegistry ──────────────────────────
+
+test("validateRegistry rejects unsafe agent assignment keys", () => {
+  const reg = {
+    ...VALID_REGISTRY,
+    agent_assignments: {
+      "../traversal": "openai/gpt-4",
+    },
+  };
+  const errors = validateRegistry(reg);
+  assert.ok(
+    errors.some(e => /traversal|unsafe|agent.*name|name.*agent/i.test(e)),
+    `Expected unsafe-name error, got: ${JSON.stringify(errors)}`
+  );
+});
+
+// Security: model IDs must not contain CR or LF characters (YAML injection via frontmatter)
+test("validateRegistry rejects model IDs containing newline characters", () => {
+  const reg = {
+    models: {
+      "openai/gpt-4\ninjected: evil": {
+        provider: "openai",
+        name: "GPT-4",
+        context_window: 8192,
+        cost: { input_per_1m: 0.01, output_per_1m: 0.03 },
+        strengths: ["reasoning"],
+      },
+    },
+    agent_assignments: {},
+    ab_test_candidates: {},
+  };
+  const errors = validateRegistry(reg);
+  assert.ok(
+    errors.some(e => /newline|control character|\\\\n|invalid/i.test(e)),
+    `Expected newline-rejection error, got: ${JSON.stringify(errors)}`
+  );
+});
+
+test("validateRegistry rejects model IDs containing carriage return characters", () => {
+  const reg = {
+    models: {
+      "openai/gpt-4\rinjected": {
+        provider: "openai",
+        name: "GPT-4",
+        context_window: 8192,
+        cost: { input_per_1m: 0.01, output_per_1m: 0.03 },
+        strengths: ["reasoning"],
+      },
+    },
+    agent_assignments: {},
+    ab_test_candidates: {},
+  };
+  const errors = validateRegistry(reg);
+  assert.ok(
+    errors.some(e => /newline|control character|\\\\r|invalid/i.test(e)),
+    `Expected carriage-return-rejection error, got: ${JSON.stringify(errors)}`
+  );
+});
+
+test("validateRegistry rejects assignment referencing model ID with newline characters", () => {
+  const maliciousId = "openai/gpt-4\ninjected: evil";
+  const reg = {
+    models: {
+      [maliciousId]: {
+        provider: "openai",
+        name: "GPT-4",
+        context_window: 8192,
+        cost: { input_per_1m: 0.01, output_per_1m: 0.03 },
+        strengths: ["reasoning"],
+      },
+    },
+    agent_assignments: { "test-agent": maliciousId },
+    ab_test_candidates: {},
+  };
+  const errors = validateRegistry(reg);
+  assert.ok(
+    errors.some(e => /newline|control character|\\\\n|invalid/i.test(e)),
+    `Expected registry-level guard to reject newline model ID, got: ${JSON.stringify(errors)}`
+  );
+});
+
+test("validateRegistry rejects unsafe A/B candidate agent keys", () => {
+  const reg = {
+    ...VALID_REGISTRY,
+    ab_test_candidates: {
+      "agent with spaces": ["openai/gpt-4"],
+    },
+  };
+  const errors = validateRegistry(reg);
+  assert.ok(
+    errors.some(e => /spaces|unsafe|agent.*name|name.*agent/i.test(e)),
+    `Expected unsafe-name error for A/B candidate key, got: ${JSON.stringify(errors)}`
+  );
+});

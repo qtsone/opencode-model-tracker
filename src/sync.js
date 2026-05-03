@@ -1,6 +1,24 @@
 // src/sync.js
-import { readdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
-import { join, basename } from "node:path";
+import { readdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, realpathSync, statSync } from "node:fs";
+import { join, basename, resolve } from "node:path";
+
+/** Maximum allowed size for a custom agent markdown file (1 MiB). */
+const MAX_AGENT_FILE_SIZE = 1024 * 1024;
+
+/**
+ * Safe agent name pattern: alphanumeric, hyphens, underscores, 1–64 chars.
+ * @type {RegExp}
+ */
+export const SAFE_AGENT_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+
+/**
+ * Returns true iff name is a safe agent name per SAFE_AGENT_NAME_RE.
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function isSafeAgentName(name) {
+  return SAFE_AGENT_NAME_RE.test(name);
+}
 
 /**
  * Read the `model:` frontmatter value from an agent markdown file.
@@ -59,27 +77,63 @@ function replaceModelLine(content, newModel, filePath) {
 
   // Replace only within the frontmatter block, matching `model:` followed by
   // whitespace or end-of-line so that keys like `model:nospace` are not touched.
-  const updatedFmBlock = fmBlock.replace(/^model:([ \t].*)?$/m, `model: ${newModel}`);
-  return content.replace(fmBlock, updatedFmBlock);
+  // Use a replacer function to prevent $ expansion in newModel (e.g. $&, $`, $').
+  const updatedFmBlock = fmBlock.replace(/^model:([ \t].*)?$/m, () => `model: ${newModel}`);
+  return content.replace(fmBlock, () => updatedFmBlock);
+}
+
+/**
+ * Enumerate safe agent files in agentDir, applying all security checks:
+ * unsafe names, symlink escapes, and size limit.
+ * Returns an array of { name, filePath } for files that pass all checks.
+ * @param {string} agentDir
+ * @returns {Array<{name: string, filePath: string}>}
+ */
+function enumerateSafeAgentFiles(agentDir) {
+  let files;
+  try {
+    files = readdirSync(agentDir).filter(f => f.endsWith(".md"));
+  } catch {
+    return [];
+  }
+  const resolvedAgentDir = (() => {
+    try { return realpathSync(agentDir); } catch { return resolve(agentDir); }
+  })();
+  const result = [];
+  for (const file of files) {
+    const name = basename(file, ".md");
+    if (!isSafeAgentName(name)) continue;
+    const filePath = join(agentDir, file);
+    // Symlink escape check
+    try {
+      const real = realpathSync(filePath);
+      if (!real.startsWith(resolvedAgentDir + "/") && real !== resolvedAgentDir) continue;
+    } catch {
+      continue;
+    }
+    // Size check
+    try {
+      const st = statSync(filePath);
+      if (st.size > MAX_AGENT_FILE_SIZE) continue;
+    } catch {
+      continue;
+    }
+    result.push({ name, filePath });
+  }
+  return result;
 }
 
 /**
  * Read all custom agent models from agent/*.md files.
  * Returns Map<agentName, modelId>.
+ * Skips unsafe filenames, symlinks escaping agentDir, and files over 1 MiB.
  * @param {string} agentDir
  * @returns {Map<string, string>}
  */
 function readCustomAgentModels(agentDir) {
   const result = new Map();
-  let files;
-  try {
-    files = readdirSync(agentDir).filter(f => f.endsWith(".md"));
-  } catch {
-    return result;
-  }
-  for (const file of files) {
-    const name = basename(file, ".md");
-    const model = readAgentModel(join(agentDir, file));
+  for (const { name, filePath } of enumerateSafeAgentFiles(agentDir)) {
+    const model = readAgentModel(filePath);
     if (model) result.set(name, model);
   }
   return result;
@@ -105,6 +159,59 @@ function readBuiltinModels(opencodePath, builtinAgents) {
     if (model) result.set(name, model);
   }
   return result;
+}
+
+/**
+ * Discover all assignable agents from custom agent/*.md files and the provided
+ * builtinAgents Set. Each entry has shape:
+ *   { name: string, source: "custom"|"opencode", model: string|null, target: string }
+ *
+ * Rules:
+ * - Custom agents: safe existing `agent/*.md` filenames only (no symlink escapes, no oversized files).
+ * - Opencode agents: from builtinAgents Set; unsafe names are skipped defensively.
+ * - If the same name appears in both, the opencode entry wins (matches builtinAgents.has() routing).
+ * - model is current model value from file/config, or null when absent/malformed.
+ * - Returns array sorted by agent name.
+ *
+ * @param {string} agentDir
+ * @param {string} opencodePath
+ * @param {Set<string>} builtinAgents
+ * @returns {Array<{name: string, source: "custom"|"opencode", model: string|null, target: string}>}
+ */
+export function discoverAssignableAgents(agentDir, opencodePath, builtinAgents) {
+  // Collect custom agents (only safe, non-symlink-escaped, non-oversized files)
+  const customMap = new Map(); // name -> model|null
+  for (const { name, filePath } of enumerateSafeAgentFiles(agentDir)) {
+    customMap.set(name, readAgentModel(filePath));
+  }
+
+  // Collect builtin models from opencode.json
+  const builtinModelMap = new Map(); // name -> model|null
+  {
+    let oc;
+    try {
+      oc = JSON.parse(readFileSync(opencodePath, "utf-8"));
+    } catch {
+      oc = {};
+    }
+    for (const name of builtinAgents) {
+      if (!isSafeAgentName(name)) continue;
+      const model = oc?.agent?.[name]?.model ?? null;
+      builtinModelMap.set(name, model);
+    }
+  }
+
+  // Merge: opencode wins for overlapping names
+  const merged = new Map(); // name -> entry
+  for (const [name, model] of customMap) {
+    merged.set(name, { name, source: "custom", model: model ?? null, target: `agent/${name}.md` });
+  }
+  for (const [name, model] of builtinModelMap) {
+    // Overwrite custom if present
+    merged.set(name, { name, source: "opencode", model: model ?? null, target: "opencode.json" });
+  }
+
+  return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /**
@@ -165,6 +272,14 @@ export function getSyncStatus(assignments, agentDir, opencodePath, builtinAgents
 export function applyRegistryAssignments(assignments, agentDir, opencodePath, builtinAgents) {
   const errors = [];
 
+  // --- Reject unsafe agent names before any path construction or file access ---
+  for (const agent of Object.keys(assignments)) {
+    if (!isSafeAgentName(agent)) {
+      errors.push(`Unsafe agent name rejected: '${agent}'. Names must match /^[a-zA-Z0-9_-]{1,64}$/.`);
+    }
+  }
+  if (errors.length) throw new Error(errors.join("\n"));
+
   // --- Stage phase: validate and compute all custom-agent mutations in memory ---
   const customModels = readCustomAgentModels(agentDir);
   const stagedCustom = []; // Array<{ filePath, tmpPath, content }>
@@ -173,6 +288,18 @@ export function applyRegistryAssignments(assignments, agentDir, opencodePath, bu
     if (builtinAgents.has(agent)) continue;
     if (customModels.get(agent) === model) continue;
     const filePath = join(agentDir, `${agent}.md`);
+
+    // Size guard: reject oversized custom agent files before reading content
+    try {
+      const st = statSync(filePath);
+      if (st.size > MAX_AGENT_FILE_SIZE) {
+        errors.push(`Agent file '${filePath}' exceeds the 1 MiB size limit and cannot be applied.`);
+        continue;
+      }
+    } catch (err) {
+      errors.push(`Agent file not found for '${agent}' at '${filePath}': ${err.message}`);
+      continue;
+    }
 
     let raw;
     try {

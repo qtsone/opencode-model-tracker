@@ -6,7 +6,7 @@ import { readFileSync, copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { loadRegistry, saveRegistry, validateRegistry } from "./registry.js";
 import { buildStatsResponse, buildDashboardChildRows } from "./stats.js";
-import { getSyncStatus, applyRegistryAssignments } from "./sync.js";
+import { getSyncStatus, applyRegistryAssignments, discoverAssignableAgents, isSafeAgentName } from "./sync.js";
 import { generateUI } from "./ui.js";
 import { listPerformanceRecords, getPerformanceRecordById, PerformanceStoreError } from "./store.js";
 import { REGISTRY_PATH, PERFORMANCE_DB_PATH, AGENT_DIR, OPENCODE_JSON, EXAMPLE_REGISTRY_PATH, registryExists } from "./paths.js";
@@ -39,7 +39,11 @@ function seedRegistryIfAbsent(registryPath) {
 function getBuiltinAgents(opencodePath = OPENCODE_JSON) {
   try {
     const oc = JSON.parse(readFileSync(opencodePath, "utf-8"));
-    return new Set(Object.keys(oc?.agent ?? {}));
+    const result = new Set();
+    for (const key of Object.keys(oc?.agent ?? {})) {
+      if (isSafeAgentName(key)) result.add(key);
+    }
+    return result;
   } catch {
     return new Set();
   }
@@ -127,7 +131,10 @@ async function handleRequest(req, res, port, adminToken, paths) {
       } catch {
         return send(res, 400, { error: "Invalid JSON body" });
       }
-      validateRegistry(body);
+      const validationErrors = validateRegistry(body);
+      if (validationErrors.length > 0) {
+        return send(res, 400, { error: validationErrors.join("; ") });
+      }
       saveRegistry(body, registryPath);
       return send(res, 200, { ok: true });
     }
@@ -137,6 +144,12 @@ async function handleRequest(req, res, port, adminToken, paths) {
       const builtins = paths?.builtinAgents ?? getBuiltinAgents(opencodePath);
       const result = getSyncStatus(registry.agent_assignments ?? {}, agentDir, opencodePath, builtins);
       return send(res, 200, result);
+    }
+
+    if (method === "GET" && pathname === "/api/agents") {
+      const builtins = paths?.builtinAgents ?? getBuiltinAgents(opencodePath);
+      const agents = discoverAssignableAgents(agentDir, opencodePath, builtins);
+      return send(res, 200, { agents });
     }
 
     if (method === "POST" && pathname === "/api/apply") {
@@ -297,13 +310,32 @@ export function applyAssignmentsForRequest(assignments, options = {}) {
   const opencodePath = options.opencodePath ?? OPENCODE_JSON;
   const builtinAgents = options.builtinAgents ?? getBuiltinAgents(opencodePath);
 
+  // Reject non-object or array inputs immediately
+  if (!assignments || typeof assignments !== "object" || Array.isArray(assignments)) {
+    throw new Error("assignments must be a non-array object");
+  }
+
+  // Discover the authoritative set of assignable agents
+  const discovered = discoverAssignableAgents(agentDir, opencodePath, builtinAgents);
+  const discoveredNames = new Set(discovered.map(a => a.name));
+
+  // Reject any assignment whose agent is not in the discovered set
+  const undiscovered = Object.keys(assignments).filter(name => !discoveredNames.has(name));
+  if (undiscovered.length > 0) {
+    throw new Error(
+      `Cannot assign to undiscovered agent(s): ${undiscovered.join(", ")}. ` +
+      `Only agents with an existing agent/*.md file or opencode.json entry are assignable.`
+    );
+  }
+
   const registry = loadRegistry(registryPath);
   registry.agent_assignments = { ...registry.agent_assignments, ...assignments };
   const errors = validateRegistry(registry);
   if (errors.length) throw new Error(errors.join("\n"));
 
-  // Apply target files first; only persist registry if apply succeeds.
-  const result = applyRegistryAssignments(registry.agent_assignments, agentDir, opencodePath, builtinAgents);
+  // Apply only the keys provided in assignments (not all historical registry keys),
+  // so stale registry-only entries cannot cause apply failures.
+  const result = applyRegistryAssignments(assignments, agentDir, opencodePath, builtinAgents);
   saveRegistry(registry, registryPath);
   return result;
 }

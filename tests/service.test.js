@@ -728,6 +728,243 @@ test("/api/stats/children?kind=evil returns 400 with static error message", asyn
   }
 });
 
+// ─── GET /api/agents ──────────────────────────────────────────────────────────
+
+test("GET /api/agents returns discovered opencode and custom agents without absolute paths", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "service-agents-discover-"));
+  try {
+    const agentDir = join(dir, "agent");
+    mkdirSync(agentDir);
+
+    writeFileSync(join(agentDir, "my-custom-agent.md"), [
+      "---",
+      "model: custom/model",
+      "description: A custom agent",
+      "---",
+      "Body",
+    ].join("\n") + "\n");
+
+    const opencodePath = join(dir, "opencode.json");
+    writeFileSync(opencodePath, JSON.stringify({
+      agent: { "plan": { model: "openai/gpt-4" } },
+    }, null, 2));
+
+    const registryPath = join(dir, "models.json");
+    writeFileSync(registryPath, JSON.stringify({ models: {}, agent_assignments: {}, ab_test_candidates: {} }, null, 2));
+
+    const builtinAgents = new Set(["plan"]);
+    const { url } = await startService({
+      port: 4820, adminToken: "agents-test-token",
+      paths: { registryPath, agentDir, opencodePath, builtinAgents },
+    });
+
+    const res = await fetch(`${url}/api/agents`);
+    assert.equal(res.status, 200, `Expected 200, got ${res.status}`);
+    const body = await res.json();
+    assert.ok(Array.isArray(body.agents), "body.agents must be an array");
+
+    const names = body.agents.map(a => a.name);
+    assert.ok(names.includes("my-custom-agent"), "custom agent must appear");
+    assert.ok(names.includes("plan"), "opencode agent must appear");
+
+    // No absolute paths in response
+    const bodyStr = JSON.stringify(body);
+    assert.ok(!bodyStr.includes(dir), "Response must not contain absolute filesystem paths");
+
+    // Targets must only be opencode.json or agent/<name>.md
+    for (const agent of body.agents) {
+      assert.ok(
+        agent.target === "opencode.json" || /^agent\/[a-zA-Z0-9_-]+\.md$/.test(agent.target),
+        `Invalid target '${agent.target}' for agent '${agent.name}'`
+      );
+    }
+  } finally {
+    await stopService();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/agents excludes unsafe opencode agent keys", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "service-agents-unsafe-"));
+  try {
+    const agentDir = join(dir, "agent");
+    mkdirSync(agentDir);
+
+    const opencodePath = join(dir, "opencode.json");
+    writeFileSync(opencodePath, JSON.stringify({
+      agent: {
+        "safe-agent": { model: "openai/gpt-4" },
+        "../traversal": { model: "evil/model" },
+        "agent with spaces": { model: "evil/model" },
+      },
+    }, null, 2));
+
+    const registryPath = join(dir, "models.json");
+    writeFileSync(registryPath, JSON.stringify({ models: {}, agent_assignments: {}, ab_test_candidates: {} }, null, 2));
+
+    // builtinAgents includes unsafe keys — getBuiltinAgents should filter them
+    const builtinAgents = new Set(["safe-agent", "../traversal", "agent with spaces"]);
+    const { url } = await startService({
+      port: 4821, adminToken: "agents-unsafe-token",
+      paths: { registryPath, agentDir, opencodePath, builtinAgents },
+    });
+
+    const res = await fetch(`${url}/api/agents`);
+    assert.equal(res.status, 200, `Expected 200, got ${res.status}`);
+    const body = await res.json();
+    assert.ok(Array.isArray(body.agents), "body.agents must be an array");
+
+    const names = body.agents.map(a => a.name);
+    assert.ok(names.includes("safe-agent"), "safe-agent must appear");
+    assert.ok(!names.includes("../traversal"), "unsafe '../traversal' must be excluded");
+    assert.ok(!names.includes("agent with spaces"), "unsafe 'agent with spaces' must be excluded");
+  } finally {
+    await stopService();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("applyAssignmentsForRequest rejects undiscovered agents and leaves registry unchanged", () => {
+  const dir = mkdtempSync(join(tmpdir(), "service-apply-undiscovered-"));
+  try {
+    const agentDir = join(dir, "agent");
+    mkdirSync(agentDir);
+    // Only my-known-agent.md exists
+    writeFileSync(join(agentDir, "my-known-agent.md"), [
+      "---",
+      "model: old/model",
+      "---",
+      "Body",
+    ].join("\n") + "\n");
+
+    const opencodePath = join(dir, "opencode.json");
+    writeFileSync(opencodePath, JSON.stringify({ agent: {} }, null, 2));
+
+    const registryPath = join(dir, "models.json");
+    const originalRegistry = {
+      models: {
+        "old/model": { provider: "t", name: "Old", context_window: 1000, cost: { input_per_1m: "free", output_per_1m: "free" }, strengths: [] },
+        "new/model": { provider: "t", name: "New", context_window: 1000, cost: { input_per_1m: "free", output_per_1m: "free" }, strengths: [] },
+      },
+      agent_assignments: { "my-known-agent": "old/model" },
+      ab_test_candidates: {},
+    };
+    writeFileSync(registryPath, JSON.stringify(originalRegistry, null, 2));
+
+    // ghost-agent is not in agentDir and not in builtinAgents
+    assert.throws(() => {
+      applyAssignmentsForRequest({ "ghost-agent": "new/model" }, {
+        registryPath,
+        agentDir,
+        opencodePath,
+        builtinAgents: new Set(),
+      });
+    }, /ghost-agent/);
+
+    const registry = JSON.parse(readFileSync(registryPath, "utf-8"));
+    assert.equal(
+      registry.agent_assignments["my-known-agent"],
+      "old/model",
+      "Registry must remain unchanged when undiscovered agent is submitted"
+    );
+    assert.ok(
+      !("ghost-agent" in registry.agent_assignments),
+      "ghost-agent must not appear in registry"
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("applyAssignmentsForRequest applies only provided discovered assignments and ignores stale registry-only assignments", () => {
+  const dir = mkdtempSync(join(tmpdir(), "service-apply-stale-"));
+  try {
+    const agentDir = join(dir, "agent");
+    mkdirSync(agentDir);
+
+    writeFileSync(join(agentDir, "active-agent.md"), [
+      "---",
+      "model: old/model",
+      "---",
+      "Body",
+    ].join("\n") + "\n");
+
+    const opencodePath = join(dir, "opencode.json");
+    writeFileSync(opencodePath, JSON.stringify({ agent: {} }, null, 2));
+
+    const registryPath = join(dir, "models.json");
+    // stale-agent is in registry but has no backing file — it's a stale entry
+    writeFileSync(registryPath, JSON.stringify({
+      models: {
+        "old/model": { provider: "t", name: "Old", context_window: 1000, cost: { input_per_1m: "free", output_per_1m: "free" }, strengths: [] },
+        "new/model": { provider: "t", name: "New", context_window: 1000, cost: { input_per_1m: "free", output_per_1m: "free" }, strengths: [] },
+      },
+      agent_assignments: {
+        "active-agent": "old/model",
+        "stale-agent": "old/model",
+      },
+      ab_test_candidates: {},
+    }, null, 2));
+
+    // Only assign active-agent; stale-agent is in the registry but must not cause apply failure
+    const result = applyAssignmentsForRequest({ "active-agent": "new/model" }, {
+      registryPath,
+      agentDir,
+      opencodePath,
+      builtinAgents: new Set(),
+    });
+
+    assert.ok(result !== null && result !== undefined, "apply must return a summary");
+    assert.equal(result.custom_agents, 1, "only one custom agent file written");
+
+    const agentFile = readFileSync(join(agentDir, "active-agent.md"), "utf-8");
+    assert.ok(agentFile.includes("model: new/model"), "active-agent must be updated");
+
+    const registry = JSON.parse(readFileSync(registryPath, "utf-8"));
+    assert.equal(registry.agent_assignments["active-agent"], "new/model", "active-agent assignment updated");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ─── PUT /api/registry: schema validation ────────────────────────────────────
+
+test("PUT /api/registry with valid token but invalid registry schema returns 400 and does not save", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "service-registry-schema-"));
+  try {
+    const registryPath = join(dir, "models.json");
+    const original = { models: {}, agent_assignments: {}, ab_test_candidates: {} };
+    writeFileSync(registryPath, JSON.stringify(original, null, 2));
+
+    const { url } = await startService({
+      port: 4810,
+      adminToken: "schema-test-token",
+      paths: { registryPath, agentDir: dir, opencodePath: join(dir, "opencode.json"), builtinAgents: new Set() },
+    });
+
+    // Send valid JSON that fails validateRegistry: models value is not an object
+    const res = await fetch(`${url}/api/registry`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "x-model-tracker-admin-token": "schema-test-token",
+      },
+      body: JSON.stringify({ models: "not-an-object", agent_assignments: {}, ab_test_candidates: {} }),
+    });
+
+    assert.equal(res.status, 400, `Expected 400 for invalid schema, got ${res.status}`);
+    const body = await res.json();
+    assert.ok(body.error, "response must include error field");
+
+    // Registry on disk must be unchanged
+    const saved = JSON.parse(readFileSync(registryPath, "utf-8"));
+    assert.deepEqual(saved, original, "invalid registry must not be written to disk");
+  } finally {
+    await stopService();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ─── Hardening: generic internal server error in catch-all ───────────────────
 
 test("catch-all error handler returns generic message without leaking details", async () => {
