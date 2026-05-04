@@ -16,3 +16,4 @@ dist/
 .tmp/
 .cache/
 .worktrees/
+.superpowers/
