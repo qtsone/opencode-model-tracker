@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [1.2.0](https://github.com/qtsone/opencode-model-tracker/compare/v1.1.0...v1.2.0) (2026-05-04)
+
+
+### Features
+
+* **stats:** add time-scoped default stats view ([ef7b797](https://github.com/qtsone/opencode-model-tracker/commit/ef7b797d44e3f0ba8680a9e9c8802db7f3082f3f))
+
 # [1.1.0](https://github.com/qtsone/opencode-model-tracker/compare/v1.0.1...v1.1.0) (2026-05-03)
 
 
