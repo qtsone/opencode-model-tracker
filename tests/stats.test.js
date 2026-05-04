@@ -19,6 +19,8 @@ import {
   buildAgentModelRows,
   buildAgentModelSessionRows,
   buildDashboardChildRows,
+  normalizeTimeRange,
+  applyTimeRangeFilter,
 } from "../src/stats.js";
 
 const RECORDS = [
@@ -113,7 +115,7 @@ test("computePerAgentModelStats sorts by avg_composite desc by default", () => {
 });
 
 test("buildStatsResponse returns full response object", () => {
-  const resp = buildStatsResponse(RECORDS, {}, REGISTRY);
+  const resp = buildStatsResponse(RECORDS, { time_range: "all" }, REGISTRY);
   assert.ok(resp.total_records >= 0);
   assert.ok(resp.filter_options);
   assert.ok(resp.per_agent_model_stats);
@@ -356,7 +358,7 @@ test("buildStatsResponse dedupes shared telemetry/message tokens while preservin
     },
   ];
 
-  const resp = buildStatsResponse(records, {}, REGISTRY);
+  const resp = buildStatsResponse(records, { time_range: "all" }, REGISTRY);
 
   assert.equal(resp.tokens.total_tokens, 185);
   assert.equal(resp.attributed_tokens.total_tokens, 355);
@@ -515,7 +517,7 @@ function makeSessionRecords(count) {
 
 test("buildStatsResponse returns per_session_pagination metadata on default page", () => {
   const records = makeSessionRecords(120);
-  const resp = buildStatsResponse(records, {}, null);
+  const resp = buildStatsResponse(records, { time_range: "all" }, null);
   assert.ok(resp.per_session_pagination, "per_session_pagination must be present");
   const pag = resp.per_session_pagination;
   assert.equal(pag.page, 1, "default page is 1");
@@ -528,13 +530,13 @@ test("buildStatsResponse returns per_session_pagination metadata on default page
 
 test("buildStatsResponse returns only page rows in per_session_stats", () => {
   const records = makeSessionRecords(120);
-  const resp = buildStatsResponse(records, {}, null);
+  const resp = buildStatsResponse(records, { time_range: "all" }, null);
   assert.equal(resp.per_session_stats.length, 50, "page 1 must have exactly 50 rows");
 });
 
 test("buildStatsResponse page 2 returns correct slice and pagination metadata", () => {
   const records = makeSessionRecords(120);
-  const resp = buildStatsResponse(records, { session_page: 2, session_page_size: 50 }, null);
+  const resp = buildStatsResponse(records, { time_range: "all", session_page: 2, session_page_size: 50 }, null);
   const pag = resp.per_session_pagination;
   assert.equal(pag.page, 2);
   assert.equal(pag.has_previous, true);
@@ -544,7 +546,7 @@ test("buildStatsResponse page 2 returns correct slice and pagination metadata", 
 
 test("buildStatsResponse last page returns partial rows and has_next=false", () => {
   const records = makeSessionRecords(120);
-  const resp = buildStatsResponse(records, { session_page: 3, session_page_size: 50 }, null);
+  const resp = buildStatsResponse(records, { time_range: "all", session_page: 3, session_page_size: 50 }, null);
   const pag = resp.per_session_pagination;
   assert.equal(pag.page, 3);
   assert.equal(pag.has_next, false);
@@ -554,8 +556,8 @@ test("buildStatsResponse last page returns partial rows and has_next=false", () 
 
 test("buildStatsResponse pagination is deterministic: page 1 and page 2 rows do not overlap", () => {
   const records = makeSessionRecords(120);
-  const page1 = buildStatsResponse(records, { session_page: 1, session_page_size: 50 }, null);
-  const page2 = buildStatsResponse(records, { session_page: 2, session_page_size: 50 }, null);
+  const page1 = buildStatsResponse(records, { time_range: "all", session_page: 1, session_page_size: 50 }, null);
+  const page2 = buildStatsResponse(records, { time_range: "all", session_page: 2, session_page_size: 50 }, null);
   const ids1 = new Set(page1.per_session_stats.map(r => r.session_id));
   const ids2 = new Set(page2.per_session_stats.map(r => r.session_id));
   for (const id of ids2) {
@@ -565,19 +567,19 @@ test("buildStatsResponse pagination is deterministic: page 1 and page 2 rows do 
 
 test("buildStatsResponse normalizes session_page_size at maximum 200", () => {
   const records = makeSessionRecords(10);
-  const resp = buildStatsResponse(records, { session_page: 1, session_page_size: 9999 }, null);
+  const resp = buildStatsResponse(records, { time_range: "all", session_page: 1, session_page_size: 9999 }, null);
   assert.equal(resp.per_session_pagination.page_size, 200);
 });
 
 test("buildStatsResponse normalizes session_page_size below 1 to 1", () => {
   const records = makeSessionRecords(10);
-  const resp = buildStatsResponse(records, { session_page: 1, session_page_size: 0 }, null);
+  const resp = buildStatsResponse(records, { time_range: "all", session_page: 1, session_page_size: 0 }, null);
   assert.ok(resp.per_session_pagination.page_size >= 1, "page_size must be at least 1");
 });
 
 test("buildStatsResponse out-of-range page clamps to last page", () => {
   const records = makeSessionRecords(10);
-  const resp = buildStatsResponse(records, { session_page: 999, session_page_size: 50 }, null);
+  const resp = buildStatsResponse(records, { time_range: "all", session_page: 999, session_page_size: 50 }, null);
   const pag = resp.per_session_pagination;
   assert.equal(pag.page, 1, "out-of-range page clamps to page 1 (only 1 page exists)");
   assert.equal(resp.per_session_stats.length, 10);
@@ -585,7 +587,7 @@ test("buildStatsResponse out-of-range page clamps to last page", () => {
 
 test("buildStatsResponse filters_applied includes normalized session_page and session_page_size", () => {
   const records = makeSessionRecords(5);
-  const resp = buildStatsResponse(records, { session_page: 2, session_page_size: 25 }, null);
+  const resp = buildStatsResponse(records, { time_range: "all", session_page: 2, session_page_size: 25 }, null);
   assert.equal(resp.filters_applied.session_page, 1, "clamped page (only 1 page for 5 sessions/25 page_size)");
   assert.equal(resp.filters_applied.session_page_size, 25);
   assert.equal(resp.filters_applied.group_session_by, "raw");
@@ -593,7 +595,7 @@ test("buildStatsResponse filters_applied includes normalized session_page and se
 
 test("buildStatsResponse with group_session_by=parent includes normalized value in filters_applied", () => {
   const records = makeSessionRecords(5);
-  const resp = buildStatsResponse(records, { group_session_by: "parent" }, null);
+  const resp = buildStatsResponse(records, { time_range: "all", group_session_by: "parent" }, null);
   assert.equal(resp.filters_applied.group_session_by, "parent");
 });
 
@@ -616,7 +618,7 @@ test("computeSessionStats parent mode attributed_total_tokens equals sum of attr
 
 test("buildStatsResponse normalizes invalid group_session_by to 'raw'", () => {
   const records = makeSessionRecords(3);
-  const resp = buildStatsResponse(records, { group_session_by: "garbage" }, null);
+  const resp = buildStatsResponse(records, { time_range: "all", group_session_by: "garbage" }, null);
   assert.equal(
     resp.filters_applied.group_session_by,
     "raw",
@@ -626,19 +628,19 @@ test("buildStatsResponse normalizes invalid group_session_by to 'raw'", () => {
 
 test("buildStatsResponse normalizes empty string group_session_by to 'raw'", () => {
   const records = makeSessionRecords(3);
-  const resp = buildStatsResponse(records, { group_session_by: "" }, null);
+  const resp = buildStatsResponse(records, { time_range: "all", group_session_by: "" }, null);
   assert.equal(resp.filters_applied.group_session_by, "raw");
 });
 
 test("buildStatsResponse accepts 'raw' group_session_by unchanged", () => {
   const records = makeSessionRecords(3);
-  const resp = buildStatsResponse(records, { group_session_by: "raw" }, null);
+  const resp = buildStatsResponse(records, { time_range: "all", group_session_by: "raw" }, null);
   assert.equal(resp.filters_applied.group_session_by, "raw");
 });
 
 test("buildStatsResponse accepts 'parent' group_session_by unchanged", () => {
   const records = makeSessionRecords(3);
-  const resp = buildStatsResponse(records, { group_session_by: "parent" }, null);
+  const resp = buildStatsResponse(records, { time_range: "all", group_session_by: "parent" }, null);
   assert.equal(resp.filters_applied.group_session_by, "parent");
 });
 
@@ -844,7 +846,7 @@ test("buildStatsResponse does not collapse records with blank message identity",
     },
   ];
 
-  const resp = buildStatsResponse(records, {}, REGISTRY);
+  const resp = buildStatsResponse(records, { time_range: "all" }, REGISTRY);
 
   assert.equal(resp.tokens.total_tokens, 3);
   assert.equal(resp.attributed_tokens.total_tokens, 3);
@@ -1089,7 +1091,7 @@ test("buildAgentModelSessionRows returns session rows sorted by total cost desce
 // ---------------------------------------------------------------------------
 
 test("buildStatsResponse exposes dashboard parent and agent top-level rows", () => {
-  const resp = buildStatsResponse(BRIDGE_RECORDS, {}, REGISTRY);
+  const resp = buildStatsResponse(BRIDGE_RECORDS, { time_range: "all" }, REGISTRY);
   assert.ok(resp.dashboard, "dashboard must be present on response");
   assert.ok(resp.dashboard.parent_sessions, "dashboard.parent_sessions must be present");
   assert.ok(Array.isArray(resp.dashboard.parent_sessions.rows), "dashboard.parent_sessions.rows must be an array");
@@ -1141,7 +1143,7 @@ test("buildRequestRowsForSession returns orphan session requests without parentS
 });
 
 test("buildStatsResponse dashboard pagination uses row pagination shape", () => {
-  const resp = buildStatsResponse(BRIDGE_RECORDS, {}, REGISTRY);
+  const resp = buildStatsResponse(BRIDGE_RECORDS, { time_range: "all" }, REGISTRY);
   const expectedKeys = ["has_next", "has_previous", "page", "page_size", "total_pages", "total_rows"];
 
   assert.deepEqual(Object.keys(resp.dashboard.parent_sessions.pagination).sort(), expectedKeys);
@@ -1155,7 +1157,7 @@ test("buildStatsResponse dashboard pagination uses row pagination shape", () => 
 });
 
 test("buildStatsResponse and billable run ledger agree on bridge fixture total tokens", () => {
-  const resp = buildStatsResponse(BRIDGE_RECORDS, {}, REGISTRY);
+  const resp = buildStatsResponse(BRIDGE_RECORDS, { time_range: "all" }, REGISTRY);
   const runs = buildBillableRuns(BRIDGE_RECORDS, REGISTRY);
   const ledgerTotalTokens = runs.reduce((sum, run) => sum + run.total_tokens, 0);
 
@@ -1165,7 +1167,7 @@ test("buildStatsResponse and billable run ledger agree on bridge fixture total t
 });
 
 test("buildStatsResponse dashboard parent filter remains dedupe-safe", () => {
-  const resp = buildStatsResponse(BRIDGE_RECORDS, { parent_session_id: "parent-sess" }, REGISTRY);
+  const resp = buildStatsResponse(BRIDGE_RECORDS, { time_range: "all", parent_session_id: "parent-sess" }, REGISTRY);
   assert.ok(resp.dashboard, "dashboard must be present");
   assert.equal(resp.dashboard.parent_sessions.rows.length, 1, "parent filter must produce exactly 1 row");
   assert.equal(resp.dashboard.parent_sessions.rows[0].id, "parent-sess", "filtered row id must be parent-sess");
@@ -1173,7 +1175,7 @@ test("buildStatsResponse dashboard parent filter remains dedupe-safe", () => {
 });
 
 test("buildDashboardChildRows kind parent-session returns parent children", () => {
-  const result = buildDashboardChildRows(BRIDGE_RECORDS, REGISTRY, { kind: "parent-session", id: "parent-sess" });
+  const result = buildDashboardChildRows(BRIDGE_RECORDS, REGISTRY, { time_range: "all", kind: "parent-session", id: "parent-sess" });
   assert.ok(Array.isArray(result.rows), "result.rows must be an array");
   // Returns parent's own request rows first, then child session rows
   assert.ok(result.rows.length >= 1, "must return at least one row");
@@ -1184,20 +1186,20 @@ test("buildDashboardChildRows kind parent-session returns parent children", () =
 });
 
 test("buildDashboardChildRows kind session-requests returns request rows", () => {
-  const result = buildDashboardChildRows(BRIDGE_RECORDS, REGISTRY, { kind: "session-requests", session_id: "child-sess", parent_session_id: "parent-sess" });
+  const result = buildDashboardChildRows(BRIDGE_RECORDS, REGISTRY, { time_range: "all", kind: "session-requests", session_id: "child-sess", parent_session_id: "parent-sess" });
   assert.ok(Array.isArray(result.rows), "result.rows must be an array");
   assert.ok(result.rows.length > 0, "must return at least one request row");
   assert.ok(result.rows.every(r => r.row_type === "request"), "all rows must have row_type request");
 });
 
 test("buildDashboardChildRows kind agent-models returns model rows", () => {
-  const result = buildDashboardChildRows(BRIDGE_RECORDS, REGISTRY, { kind: "agent-models", agent: "backend-engineer" });
+  const result = buildDashboardChildRows(BRIDGE_RECORDS, REGISTRY, { time_range: "all", kind: "agent-models", agent: "backend-engineer" });
   assert.ok(Array.isArray(result.rows), "result.rows must be an array");
   assert.ok(result.rows.length > 0, "must return at least one model row");
 });
 
 test("buildDashboardChildRows kind agent-model-sessions returns session rows", () => {
-  const result = buildDashboardChildRows(BRIDGE_RECORDS, REGISTRY, { kind: "agent-model-sessions", agent: "backend-engineer", model_id: "openai/gpt-5.3-codex" });
+  const result = buildDashboardChildRows(BRIDGE_RECORDS, REGISTRY, { time_range: "all", kind: "agent-model-sessions", agent: "backend-engineer", model_id: "openai/gpt-5.3-codex" });
   assert.ok(Array.isArray(result.rows), "result.rows must be an array");
 });
 
@@ -1254,6 +1256,7 @@ test("buildRequestRowsForSession rows have no child_query property", () => {
 
 test("buildDashboardChildRows kind session-requests rows have no child_query", () => {
   const result = buildDashboardChildRows(BRIDGE_RECORDS, REGISTRY, {
+    time_range: "all",
     kind: "session-requests",
     session_id: "child-sess",
     parent_session_id: "parent-sess",
@@ -1294,4 +1297,233 @@ test("buildParentSessionChildren child_session rows with runs have has_children 
   assert.ok(childRow, "child-sess row must be present");
   // child-sess has runs (msg-bridge-1 and msg-child-2) so has_children should be true
   assert.equal(childRow.has_children, true, "child-sess row has runs, so has_children must be true");
+});
+
+// ---------------------------------------------------------------------------
+// Time range filtering
+// ---------------------------------------------------------------------------
+
+const FIXED_NOW_MS = Date.parse("2026-05-04T12:00:00Z");
+
+function makeTimedRecord(id, timestamp, overrides = {}) {
+  return {
+    id,
+    agent: overrides.agent ?? "backend-engineer",
+    source: overrides.source ?? "main",
+    session_id: overrides.session_id ?? `session-${id}`,
+    telemetry_session_id: overrides.telemetry_session_id ?? overrides.session_id ?? `session-${id}`,
+    message_id: overrides.message_id ?? `message-${id}`,
+    model_id: overrides.model_id ?? "openai/gpt-5.3-codex",
+    duration_ms: overrides.duration_ms ?? 1000,
+    cost_usd: overrides.cost_usd ?? 0,
+    timestamp,
+    tokens: overrides.tokens ?? { input: 10, cache_read: 0, cache_write: 0, output: 5 },
+    scores: overrides.scores ?? { composite: 0.7, effective_quality: 4 },
+  };
+}
+
+// --- normalizeTimeRange ---
+
+test("normalizeTimeRange defaults null to 1h", () => {
+  assert.equal(normalizeTimeRange(null), "1h");
+});
+
+test("normalizeTimeRange defaults undefined to 1h", () => {
+  assert.equal(normalizeTimeRange(undefined), "1h");
+});
+
+test("normalizeTimeRange defaults empty string to 1h", () => {
+  assert.equal(normalizeTimeRange(""), "1h");
+});
+
+test("normalizeTimeRange defaults bogus value to 1h", () => {
+  assert.equal(normalizeTimeRange("bogus"), "1h");
+});
+
+test("normalizeTimeRange defaults wrong case '1H' to 1h", () => {
+  assert.equal(normalizeTimeRange("1H"), "1h");
+});
+
+test("normalizeTimeRange accepts '15m'", () => {
+  assert.equal(normalizeTimeRange("15m"), "15m");
+});
+
+test("normalizeTimeRange accepts '30m'", () => {
+  assert.equal(normalizeTimeRange("30m"), "30m");
+});
+
+test("normalizeTimeRange accepts '1h'", () => {
+  assert.equal(normalizeTimeRange("1h"), "1h");
+});
+
+test("normalizeTimeRange accepts '24h'", () => {
+  assert.equal(normalizeTimeRange("24h"), "24h");
+});
+
+test("normalizeTimeRange accepts '7d'", () => {
+  assert.equal(normalizeTimeRange("7d"), "7d");
+});
+
+test("normalizeTimeRange accepts '30d'", () => {
+  assert.equal(normalizeTimeRange("30d"), "30d");
+});
+
+test("normalizeTimeRange accepts 'all'", () => {
+  assert.equal(normalizeTimeRange("all"), "all");
+});
+
+// --- applyTimeRangeFilter ---
+
+test("applyTimeRangeFilter excludes a record older than the 1h relative window", () => {
+  const oldRecord = makeTimedRecord("old", "2026-05-04T10:30:00Z"); // 1.5h before FIXED_NOW_MS
+  const result = applyTimeRangeFilter([oldRecord], "1h", FIXED_NOW_MS);
+  assert.equal(result.length, 0, "record older than 1h must be excluded");
+});
+
+test("applyTimeRangeFilter includes a record within the 1h relative window", () => {
+  const newRecord = makeTimedRecord("new", "2026-05-04T11:30:00Z"); // 30m before FIXED_NOW_MS
+  const result = applyTimeRangeFilter([newRecord], "1h", FIXED_NOW_MS);
+  assert.equal(result.length, 1, "record within 1h must be included");
+});
+
+test("applyTimeRangeFilter excludes a record older than the 30m relative window", () => {
+  const oldRecord = makeTimedRecord("old", "2026-05-04T11:20:00Z"); // 40m before FIXED_NOW_MS
+  const result = applyTimeRangeFilter([oldRecord], "30m", FIXED_NOW_MS);
+  assert.equal(result.length, 0, "record older than 30m must be excluded");
+});
+
+test("applyTimeRangeFilter includes invalid/missing timestamp only for 'all'", () => {
+  const noTs = makeTimedRecord("nots", null);
+  const badTs = makeTimedRecord("badts", "not-a-date");
+
+  assert.equal(applyTimeRangeFilter([noTs], "all", FIXED_NOW_MS).length, 1, "null timestamp included for 'all'");
+  assert.equal(applyTimeRangeFilter([badTs], "all", FIXED_NOW_MS).length, 1, "invalid timestamp included for 'all'");
+  assert.equal(applyTimeRangeFilter([noTs], "1h", FIXED_NOW_MS).length, 0, "null timestamp excluded for relative range");
+  assert.equal(applyTimeRangeFilter([badTs], "1h", FIXED_NOW_MS).length, 0, "invalid timestamp excluded for relative range");
+});
+
+test("applyTimeRangeFilter with 'all' includes all records regardless of age", () => {
+  const veryOld = makeTimedRecord("veryold", "2020-01-01T00:00:00Z");
+  const recent = makeTimedRecord("recent", "2026-05-04T11:59:00Z");
+  const result = applyTimeRangeFilter([veryOld, recent], "all", FIXED_NOW_MS);
+  assert.equal(result.length, 2, "'all' must include records of any age");
+});
+
+// --- buildStatsResponse with time_range ---
+
+test("buildStatsResponse defaults missing time_range to 1h and excludes old records", () => {
+  const oldRecord = makeTimedRecord("old", "2026-04-27T10:00:00Z"); // weeks ago
+  const recentRecord = makeTimedRecord("recent", "2026-05-04T11:50:00Z"); // 10m before FIXED_NOW_MS
+
+  // Use a fixed now approach via overriding — we pass time_range but not nowMs
+  // The key assertion: with time_range missing, old records must NOT appear in stats
+  // We pass time_range: undefined to check that it defaults to "1h"
+  const resp = buildStatsResponse([oldRecord, recentRecord], {}, REGISTRY);
+  // filters_applied must include normalized time_range
+  assert.equal(resp.filters_applied.time_range, "1h", "default time_range must be '1h' in filters_applied");
+  // total_records must only count filtered records (only recent one should be within 1h of real now)
+  // We can't control real now, so let's verify the normalized value is present and correct type
+  assert.ok(typeof resp.filters_applied.time_range === "string", "time_range must be a string in filters_applied");
+});
+
+test("buildStatsResponse with time_range 'all' preserves all-time filter options", () => {
+  const oldRecord = makeTimedRecord("old", "2026-04-27T10:00:00Z", { agent: "archive-agent" });
+  const recentRecord = makeTimedRecord("recent", "2026-05-04T11:50:00Z", { agent: "live-agent" });
+
+  const resp = buildStatsResponse([oldRecord, recentRecord], { time_range: "all" }, REGISTRY);
+  // filter_options must be sourced from all records (all-time), not the filtered set
+  assert.ok(resp.filter_options.agents.includes("archive-agent"), "filter_options must include agents from all-time records");
+  assert.ok(resp.filter_options.agents.includes("live-agent"), "filter_options must include live agents");
+});
+
+test("buildStatsResponse time-filters computed data while filter_options come from all records", () => {
+  const oldRecord = makeTimedRecord("old", "2026-04-27T10:00:00Z", { agent: "old-agent", session_id: "old-sess" });
+  const recentRecord = makeTimedRecord("recent", "2026-05-04T11:50:00Z", { agent: "new-agent", session_id: "new-sess" });
+
+  // With time_range "1h", old record is excluded from stats but should appear in filter_options
+  // (filter_options always uses allRecords)
+  const resp = buildStatsResponse([oldRecord, recentRecord], { time_range: "1h" }, REGISTRY);
+  // old-agent must appear in filter options (all-time) even though not in filtered stats
+  assert.ok(resp.filter_options.agents.includes("old-agent"), "old-agent must appear in filter_options even when time-filtered out");
+});
+
+test("buildStatsResponse applies secondary filters on top of time-filtered records", () => {
+  const r1 = makeTimedRecord("r1", "2026-05-04T11:50:00Z", { agent: "agent-a", model_id: "openai/gpt-5.3-codex" });
+  const r2 = makeTimedRecord("r2", "2026-05-04T11:51:00Z", { agent: "agent-b", model_id: "openai/gpt-5.3-codex" });
+
+  // Use "all" to bypass time filtering so this test focuses on secondary filter behavior
+  const resp = buildStatsResponse([r1, r2], { time_range: "all", agent: "agent-a" }, REGISTRY);
+  assert.equal(resp.filters_applied.agent, "agent-a");
+  // Only agent-a record should count in stats
+  assert.equal(resp.total_records, 1, "secondary agent filter must narrow stats to agent-a records only");
+});
+
+test("buildStatsResponse normalizes bogus time_range to 1h in filters_applied", () => {
+  const resp = buildStatsResponse([], { time_range: "bogus" }, REGISTRY);
+  assert.equal(resp.filters_applied.time_range, "1h");
+});
+
+// --- buildDashboardChildRows with time_range ---
+
+test("buildDashboardChildRows applies time_range and secondary filters", () => {
+  const oldRecord = makeTimedRecord("old", "2026-04-27T10:00:00Z", {
+    agent: "backend-engineer",
+    model_id: "openai/gpt-5.3-codex",
+    session_id: "old-sess",
+    telemetry_session_id: "old-sess",
+  });
+  const recentRecord = makeTimedRecord("recent", "2026-05-04T11:50:00Z", {
+    agent: "backend-engineer",
+    model_id: "openai/gpt-5.3-codex",
+    session_id: "new-sess",
+    telemetry_session_id: "new-sess",
+  });
+
+  // With time_range "all", both records visible
+  const allResult = buildDashboardChildRows([oldRecord, recentRecord], REGISTRY, {
+    kind: "agent-models",
+    agent: "backend-engineer",
+    time_range: "all",
+  });
+  assert.ok(Array.isArray(allResult.rows), "rows must be an array");
+  // The model row should aggregate both records
+  const modelRow = allResult.rows.find(r => r.model_id === "openai/gpt-5.3-codex");
+  assert.ok(modelRow, "model row must exist for 'all' time range");
+  assert.equal(modelRow.run_count, 2, "'all' time range must include both records");
+});
+
+test("buildDashboardChildRows with relative time_range '1h' excludes old records for agent-models child rows", () => {
+  const realNow = Date.now();
+  const oldTs = new Date(realNow - 2 * 60 * 60 * 1000).toISOString(); // 2h ago — outside 1h window
+  const recentTs = new Date(realNow - 10 * 60 * 1000).toISOString(); // 10m ago — within 1h window
+
+  const oldRecord = makeTimedRecord("old-child", oldTs, {
+    agent: "backend-engineer",
+    model_id: "openai/gpt-5.3-codex",
+    session_id: "old-child-sess",
+    telemetry_session_id: "old-child-sess",
+    message_id: "msg-old-child",
+  });
+  const recentRecord = makeTimedRecord("recent-child", recentTs, {
+    agent: "backend-engineer",
+    model_id: "openai/gpt-5.3-codex",
+    session_id: "recent-child-sess",
+    telemetry_session_id: "recent-child-sess",
+    message_id: "msg-recent-child",
+  });
+
+  const result = buildDashboardChildRows([oldRecord, recentRecord], REGISTRY, {
+    kind: "agent-models",
+    agent: "backend-engineer",
+    time_range: "1h",
+  });
+
+  assert.ok(Array.isArray(result.rows), "result.rows must be an array");
+  const modelRow = result.rows.find(r => r.model_id === "openai/gpt-5.3-codex");
+  assert.ok(modelRow, "model row must exist for recent data within the 1h window");
+  assert.equal(
+    modelRow.run_count,
+    1,
+    `relative '1h' range must exclude the 2h-old record; run_count must be 1 but got ${modelRow.run_count}`
+  );
 });

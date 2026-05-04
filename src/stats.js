@@ -17,6 +17,59 @@ import {
   tokenStatsForRecord,
 } from "./ledger.js";
 
+// ---------------------------------------------------------------------------
+// Time range constants and helpers
+// ---------------------------------------------------------------------------
+
+const TIME_RANGE_MS = {
+  "15m": 15 * 60 * 1000,
+  "30m": 30 * 60 * 1000,
+  "1h":  60 * 60 * 1000,
+  "24h": 24 * 60 * 60 * 1000,
+  "7d":  7 * 24 * 60 * 60 * 1000,
+  "30d": 30 * 24 * 60 * 60 * 1000,
+};
+
+const DEFAULT_TIME_RANGE = "1h";
+
+/**
+ * Normalize a time_range query value. Valid values: "15m", "30m", "1h", "24h", "7d", "30d", "all".
+ * All other values (null, undefined, empty, unknown, wrong case) normalize to DEFAULT_TIME_RANGE.
+ *
+ * @param {string|null|undefined} value
+ * @returns {string}
+ */
+export function normalizeTimeRange(value) {
+  if (value === "all") return "all";
+  if (typeof value === "string" && Object.prototype.hasOwnProperty.call(TIME_RANGE_MS, value)) {
+    return value;
+  }
+  return DEFAULT_TIME_RANGE;
+}
+
+/**
+ * Filter records to those within the given time range window.
+ * For relative ranges, records with missing or invalid timestamps are excluded.
+ * For "all", all records are included regardless of timestamp.
+ *
+ * @param {object[]} records
+ * @param {string} timeRange - normalized time range value
+ * @param {number} [nowMs] - reference timestamp in milliseconds (defaults to Date.now())
+ * @returns {object[]}
+ */
+export function applyTimeRangeFilter(records, timeRange, nowMs = Date.now()) {
+  if (timeRange === "all") return records;
+  const windowMs = TIME_RANGE_MS[timeRange];
+  if (!windowMs) return records;
+  const cutoff = nowMs - windowMs;
+  return records.filter(r => {
+    if (!r.timestamp) return false;
+    const ts = Date.parse(r.timestamp);
+    if (!Number.isFinite(ts)) return false;
+    return ts >= cutoff;
+  });
+}
+
 const VALID_SORT_FIELDS = new Set([
   "avg_composite",
   "avg_effective_quality",
@@ -299,6 +352,7 @@ export function buildStatsResponse(allRecords, params, registry = null) {
   const sort_by    = params.sort_by    || "avg_composite";
   const sort_dir   = params.sort_dir   || "desc";
   const groupSessionBy = params.group_session_by === "parent" ? "parent" : "raw";
+  const time_range = normalizeTimeRange(params.time_range);
 
   // Normalize pagination params: page_size clamped to [1, 200], page is 1-based
   const PAGE_SIZE_MAX = 200;
@@ -307,9 +361,13 @@ export function buildStatsResponse(allRecords, params, registry = null) {
   if (!Number.isFinite(pageSize) || pageSize < 1) pageSize = PAGE_SIZE_DEFAULT;
   if (pageSize > PAGE_SIZE_MAX) pageSize = PAGE_SIZE_MAX;
 
+  // filter_options always reflects all-time records
   const filterOptions = computeFilterOptions(allRecords);
-  const filtered      = applyFilters(allRecords, agent, session_id, model_id);
-  const stats         = computeStats(filtered, registry);
+
+  // Apply time range first, then secondary filters for stats/session/per-agent-model data
+  const timeFiltered = applyTimeRangeFilter(allRecords, time_range);
+  const filtered     = applyFilters(timeFiltered, agent, session_id, model_id);
+  const stats        = computeStats(filtered, registry);
 
   const allSessionRows = computeSessionStats(filtered, registry, { groupSessionBy });
   const totalSessions  = allSessionRows.length;
@@ -338,19 +396,19 @@ export function buildStatsResponse(allRecords, params, registry = null) {
 
   const dashboardParentSessionId = params.parent_session_id || session_id || null;
 
-  const dashboardParentSessions = buildParentSessionDashboardRows(allRecords, registry, {
+  const dashboardParentSessions = buildParentSessionDashboardRows(filtered, registry, {
     page: Number.isFinite(parentPage) && parentPage >= 1 ? parentPage : 1,
     pageSize: Number.isFinite(parentPageSize) && parentPageSize >= 1 ? parentPageSize : 50,
     parentSessionId: dashboardParentSessionId,
   });
 
-  const dashboardAgents = buildAgentDashboardRows(allRecords, registry, {
+  const dashboardAgents = buildAgentDashboardRows(filtered, registry, {
     page: Number.isFinite(agentPage) && agentPage >= 1 ? agentPage : 1,
     pageSize: Number.isFinite(agentPageSize) && agentPageSize >= 1 ? agentPageSize : 50,
   });
 
-  // Summary uses allRecords canonical tokens for broad totals
-  const allRuns = buildBillableRuns(allRecords, registry);
+  // Summary uses filtered (time-ranged + secondary-filtered) canonical tokens for broad totals
+  const allRuns = buildBillableRuns(filtered, registry);
   const summaryBuckets = sumRunBuckets(allRuns);
   const dashboardSummary = {
     total_tokens: summaryBuckets.total_tokens,
@@ -365,7 +423,7 @@ export function buildStatsResponse(allRecords, params, registry = null) {
     ...stats,
     last_updated:          new Date().toISOString(),
     error:                 null,
-    filters_applied:       { agent, session_id, model_id, sort_by, sort_dir, group_session_by: groupSessionBy, session_page: page, session_page_size: pageSize },
+    filters_applied:       { agent, session_id, model_id, sort_by, sort_dir, group_session_by: groupSessionBy, session_page: page, session_page_size: pageSize, time_range },
     filter_options:        filterOptions,
     per_agent_model_stats: computePerAgentModelStats(filtered, sort_by, sort_dir, registry),
     per_session_stats:     perSessionStats,
@@ -388,18 +446,26 @@ export function buildStatsResponse(allRecords, params, registry = null) {
  * @returns {{ rows: object[] }}
  */
 export function buildDashboardChildRows(records, registry = null, params = {}) {
+  const time_range = normalizeTimeRange(params.time_range);
+  const agent      = params.agent      || null;
+  const session_id = params.session_id || null;
+  const model_id   = params.model_id   || null;
+
+  const timeFiltered = applyTimeRangeFilter(records, time_range);
+  const filtered     = applyFilters(timeFiltered, agent, session_id, model_id);
+
   const { kind } = params;
   if (kind === "parent-session") {
-    return { rows: buildParentSessionChildren(records, registry, params.id) };
+    return { rows: buildParentSessionChildren(filtered, registry, params.id) };
   }
   if (kind === "session-requests") {
-    return { rows: buildRequestRowsForSession(records, registry, { sessionId: params.session_id, parentSessionId: params.parent_session_id }) };
+    return { rows: buildRequestRowsForSession(filtered, registry, { sessionId: params.session_id, parentSessionId: params.parent_session_id }) };
   }
   if (kind === "agent-models") {
-    return { rows: buildAgentModelRows(records, registry, params.agent) };
+    return { rows: buildAgentModelRows(filtered, registry, params.agent) };
   }
   if (kind === "agent-model-sessions") {
-    return { rows: buildAgentModelSessionRows(records, registry, { agent: params.agent, model_id: params.model_id }) };
+    return { rows: buildAgentModelSessionRows(filtered, registry, { agent: params.agent, model_id: params.model_id }) };
   }
   throw new Error("Invalid dashboard child kind");
 }

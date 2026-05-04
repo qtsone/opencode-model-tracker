@@ -107,15 +107,6 @@ async function handleRequest(req, res, port, adminToken, paths) {
       return res.end();
     }
 
-    if (method === "GET" && pathname === "/api/health") {
-      // Omit registry_path and store_path to avoid leaking local filesystem
-      // paths to any client that can reach the health endpoint.
-      return send(res, 200, {
-        status: "ok",
-        port,
-      });
-    }
-
     if (method === "GET" && pathname === "/api/registry") {
       const registry = loadRegistry(registryPath);
       return send(res, 200, registry);
@@ -189,7 +180,7 @@ async function handleRequest(req, res, port, adminToken, paths) {
     }
 
     if (method === "GET" && pathname === "/api/stats/children") {
-      const { kind, id, session_id, parent_session_id, agent, model_id } = query;
+      const { kind, id, session_id, parent_session_id, agent, model_id, time_range } = query;
       if (!kind) {
         return send(res, 400, { error: "Missing required query param: kind" });
       }
@@ -212,12 +203,12 @@ async function handleRequest(req, res, port, adminToken, paths) {
         throw e;
       }
       const registry = loadRegistry(registryPath);
-      const result = buildDashboardChildRows(records, registry, { kind, id, session_id, parent_session_id, agent, model_id });
+      const result = buildDashboardChildRows(records, registry, { kind, id, session_id, parent_session_id, agent, model_id, time_range });
       return send(res, 200, result);
     }
 
     if (method === "GET" && pathname === "/api/stats") {
-      const { agent, session_id, model_id, sort_by, sort_dir, group_session_by, session_page, session_page_size, parent_session_id, parent_page, parent_page_size, agent_page, agent_page_size } = query;
+      const { agent, session_id, model_id, sort_by, sort_dir, group_session_by, session_page, session_page_size, parent_session_id, parent_page, parent_page_size, agent_page, agent_page_size, time_range } = query;
       let records;
       try {
         records = await listPerformanceRecords(activeDbPath);
@@ -233,7 +224,7 @@ async function handleRequest(req, res, port, adminToken, paths) {
         throw e;
       }
       const registry = loadRegistry(registryPath);
-      const result = buildStatsResponse(records, { agent, session_id, model_id, sort_by, sort_dir, group_session_by, session_page, session_page_size, parent_session_id, parent_page, parent_page_size, agent_page, agent_page_size }, registry);
+      const result = buildStatsResponse(records, { agent, session_id, model_id, sort_by, sort_dir, group_session_by, session_page, session_page_size, parent_session_id, parent_page, parent_page_size, agent_page, agent_page_size, time_range }, registry);
       return send(res, 200, result);
     }
 

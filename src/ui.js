@@ -17,6 +17,7 @@ var _agentPage = 1;
 var _agentPageSize = 50;
 var _agentTotalPages = 1;
 var _expandedRows = {};
+var _timeRange = '1h';
 var _adminToken = '${token}';
 
 function showPage(name) {
@@ -24,7 +25,6 @@ function showPage(name) {
   document.querySelectorAll('nav a').forEach(function(a) { a.classList.remove('active'); });
   document.getElementById('page-' + name).classList.add('active');
   document.getElementById('nav-' + name).classList.add('active');
-  if (name === 'health')      loadHealth();
   if (name === 'registry')    loadRegistryPage();
   if (name === 'assignments') loadAssignments();
   if (name === 'stats')       loadStats();
@@ -71,15 +71,6 @@ function esc(s) {
 function truncateLabel(s) {
   if (!s) return '\u2014';
   return s.length > 18 ? s.slice(0, 16) + '\u2026' : s;
-}
-
-function loadHealth() {
-  apiFetch('/api/health').then(function(h) {
-    document.getElementById('h-status').innerHTML = '<span class="status-ok">OK</span>';
-    document.getElementById('h-port').textContent = h.port || location.port || '—';
-  }).catch(function(e) {
-    document.getElementById('h-status').innerHTML = '<span class="status-err">Error: ' + esc(e.message) + '</span>';
-  });
 }
 
 function loadRegistryPage() {
@@ -314,18 +305,92 @@ function populateSel(id, options, current) {
   if (!current) sel.value = '';
 }
 
+function appendStatsScopeParams(params) {
+  params.set('time_range', _timeRange);
+  var agentEl = document.getElementById('f-agent');
+  var sessionEl = document.getElementById('f-session');
+  var modelEl = document.getElementById('f-model');
+  if (agentEl && agentEl.value) params.set('agent', agentEl.value);
+  if (sessionEl && sessionEl.value) params.set('session_id', sessionEl.value);
+  if (modelEl && modelEl.value) params.set('model_id', modelEl.value);
+}
+
+function clearExpandedDashboardRows() {
+  _expandedRows = {};
+  ['parent-sessions-body', 'agents-body'].forEach(function(id) {
+    var tbody = document.getElementById(id);
+    if (!tbody) return;
+    tbody.querySelectorAll('tr[data-parent-key]').forEach(function(row) {
+      if (row.parentNode) row.parentNode.removeChild(row);
+    });
+  });
+}
+
+function resetStatsViewState() {
+  _parentPage = 1;
+  _agentPage = 1;
+  clearExpandedDashboardRows();
+}
+
+function activeSecondaryFilterCount() {
+  var count = 0;
+  if (document.getElementById('f-agent') && document.getElementById('f-agent').value) count++;
+  if (document.getElementById('f-session') && document.getElementById('f-session').value) count++;
+  if (document.getElementById('f-model') && document.getElementById('f-model').value) count++;
+  return count;
+}
+
+function updateFilterBadge() {
+  var badge = document.getElementById('filters-count');
+  if (!badge) return;
+  var count = activeSecondaryFilterCount();
+  if (count > 0) {
+    badge.textContent = String(count);
+    badge.style.display = 'inline-flex';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+function updateTimeRangeChips() {
+  document.querySelectorAll('[data-time-range]').forEach(function(chip) {
+    if (chip.dataset.timeRange === _timeRange) {
+      chip.classList.add('active');
+    } else {
+      chip.classList.remove('active');
+    }
+  });
+}
+
+function setTimeRange(range) {
+  _timeRange = range;
+  updateTimeRangeChips();
+  resetStatsViewState();
+  loadStats();
+}
+
+function openStatsFilters() {
+  document.getElementById('stats-filter-modal').classList.add('open');
+}
+
+function closeStatsFilters() {
+  document.getElementById('stats-filter-modal').classList.remove('open');
+}
+
+function applyStatsFilters() {
+  updateFilterBadge();
+  closeStatsFilters();
+  resetStatsViewState();
+  loadStats();
+}
+
 function loadStats() {
   document.getElementById('parent-sessions-body').innerHTML = skeletonRows(4, 10);
   document.getElementById('agents-body').innerHTML = skeletonRows(3, 10);
   var params = new URLSearchParams();
-  var agent = document.getElementById('f-agent').value;
-  var session = document.getElementById('f-session').value;
-  var model = document.getElementById('f-model').value;
+  appendStatsScopeParams(params);
   var sortBy = document.getElementById('sort-by').value;
   var sortDir = document.getElementById('sort-dir').value;
-  if (agent) params.set('agent', agent);
-  if (session) params.set('session_id', session);
-  if (model) params.set('model_id', model);
   params.set('sort_by', sortBy);
   params.set('sort_dir', sortDir);
   params.set('parent_page', String(_parentPage));
@@ -334,12 +399,17 @@ function loadStats() {
   params.set('agent_page_size', String(_agentPageSize));
 
   apiFetch('/api/stats?' + params.toString()).then(function(data) {
+    if (data.filters_applied && data.filters_applied.time_range) {
+      _timeRange = data.filters_applied.time_range;
+      updateTimeRangeChips();
+    }
     if (data.filter_options) {
       var fa = data.filters_applied || {};
       populateSel('f-agent', data.filter_options.agents, fa.agent);
       populateSel('f-session', data.filter_options.session_ids, fa.session_id);
       populateSel('f-model', data.filter_options.model_ids, fa.model_id);
     }
+    updateFilterBadge();
     document.getElementById('kpi-total').textContent = data.total_records != null ? data.total_records : '—';
     document.getElementById('kpi-dur').textContent = fmtDur(data.avg_duration_ms);
     document.getElementById('kpi-cost').textContent = fmt(data.total_cost_usd, 2);
@@ -502,7 +572,9 @@ function toggleDashboardRow(tbody, row) {
     row.dataset.expanded = '';
     return;
   }
-  apiFetch('/api/stats/children?' + new URLSearchParams(childQuery).toString()).then(function(data) {
+  var childParams = new URLSearchParams(childQuery);
+  appendStatsScopeParams(childParams);
+  apiFetch('/api/stats/children?' + childParams.toString()).then(function(data) {
     var rows = (data && data.rows) ? data.rows : [];
     var childLevel = parseInt(row.dataset.level || 0, 10) + 1;
 
@@ -662,7 +734,7 @@ function resetFilters() {
   document.getElementById('f-model').value = '';
   document.getElementById('sort-by').value = 'avg_composite';
   document.getElementById('sort-dir').value = 'desc';
-  loadStats();
+  applyStatsFilters();
 }
 
 var _msgModalOpen = false;
@@ -823,7 +895,7 @@ function filterRegistry() {
   });
 }
 
-showPage('health');
+showPage('stats');
 `;
 }
 
@@ -852,11 +924,9 @@ const HTML_SHELL_PREFIX = /* html */`<!DOCTYPE html>
     nav a:hover, nav a.active { color: #60a5fa; background: #172033; }
     .page { display: none; max-width: 1200px; margin: 0 auto; padding: 2rem 1.5rem; }
     .page.active { display: block; }
-    .health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
     .card { background: #1e2433; border: 1px solid #2d3748; border-radius: 10px; padding: 1.25rem 1.5rem; }
     .card-label { font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; color: #94a3b8; margin-bottom: .4rem; }
     .card-value { font-size: 1.1rem; font-weight: 600; color: #60a5fa; word-break: break-all; }
-    .status-ok { color: #4ade80; } .status-err { color: #f87171; }
     table { width: 100%; border-collapse: collapse; font-size: .82rem; margin-top: .75rem; }
     th { background: #1e2433; color: #94a3b8; padding: .6rem .75rem; text-align: left; font-weight: 600; border-bottom: 1px solid #2d3748; white-space: nowrap; }
     td { padding: .55rem .75rem; border-bottom: 1px solid #1e2433; color: #cbd5e1; }
@@ -878,11 +948,17 @@ const HTML_SHELL_PREFIX = /* html */`<!DOCTYPE html>
       padding: .75rem 1.5rem; display: flex; align-items: center; gap: 1rem; z-index: 50;
     }
     .apply-bar span { font-size: .82rem; color: #94a3b8; flex: 1; }
-    .filter-bar { background: #1e2433; border: 1px solid #2d3748; border-radius: 10px; padding: 1rem 1.25rem; display: flex; flex-wrap: wrap; gap: .75rem; align-items: flex-end; margin-bottom: 1.5rem; }
     .filter-group { display: flex; flex-direction: column; gap: .3rem; }
     .filter-group label { font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; color: #94a3b8; }
     .filter-group select { background: #0f1117; border: 1px solid #2d3748; color: #e2e8f0; border-radius: 6px; padding: .35rem .6rem; font-size: .82rem; min-width: 160px; }
-    .filter-actions { display: flex; gap: .5rem; align-items: flex-end; margin-left: auto; }
+    .stats-toolbar { display: flex; align-items: center; justify-content: space-between; gap: .75rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
+    .stats-time-range { display: inline-flex; gap: .2rem; background: #1e2433; border: 1px solid #2d3748; border-radius: 9px; padding: .2rem; }
+    .time-chip { background: transparent; border: 0; color: #94a3b8; border-radius: 7px; padding: .4rem .6rem; font-size: .8rem; cursor: pointer; }
+    .time-chip:hover { background: #172033; color: #cbd5e1; }
+    .time-chip.active { background: #1e3a5f; color: #bfdbfe; }
+    .filter-count { align-items: center; justify-content: center; min-width: 1.1rem; height: 1.1rem; margin-left: .35rem; border-radius: 999px; background: #2563eb; color: #eff6ff; font-size: .68rem; font-weight: 700; }
+    .filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .8rem; }
+    .stats-filter-modal { width: min(720px, 95vw); }
     .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
     .kpi-value { font-size: 2rem; font-weight: 700; color: #60a5fa; }
     .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 2rem; }
@@ -1026,18 +1102,10 @@ const HTML_SHELL_PREFIX = /* html */`<!DOCTYPE html>
 
 <nav>
   <h1>Model Tracker</h1>
-  <a onclick="showPage('health')" id="nav-health">Health</a>
   <a onclick="showPage('registry')" id="nav-registry">Registry</a>
   <a onclick="showPage('assignments')" id="nav-assignments">Assignments</a>
   <a onclick="showPage('stats')" id="nav-stats">Stats</a>
 </nav>
-
-<div class="page" id="page-health">
-  <div class="health-grid">
-    <div class="card"><div class="card-label">Service</div><div class="card-value" id="h-status">—</div></div>
-    <div class="card"><div class="card-label">Port</div><div class="card-value" id="h-port">—</div></div>
-  </div>
-</div>
 
 <div class="page" id="page-registry">
   <section>
@@ -1070,25 +1138,44 @@ const HTML_SHELL_PREFIX = /* html */`<!DOCTYPE html>
 </div>
 
 <div class="page" id="page-stats">
-  <div class="filter-bar">
-    <div class="filter-group"><label>Agent</label><select id="f-agent"><option value="">All agents</option></select></div>
-    <div class="filter-group"><label>Session</label><select id="f-session"><option value="">All sessions</option></select></div>
-    <div class="filter-group"><label>Model</label><select id="f-model"><option value="">All models</option></select></div>
-    <div class="filter-group"><label>Sort by</label>
-      <select id="sort-by">
-        <option value="avg_composite">Avg Composite</option>
-        <option value="avg_effective_quality">Avg Quality</option>
-        <option value="avg_duration_ms">Avg Duration</option>
-        <option value="total_cost_usd">Total Cost</option>
-        <option value="runs">Runs</option>
-      </select>
+  <div class="stats-toolbar">
+    <div class="stats-time-range" id="stats-time-range" aria-label="Stats time range">
+      <button class="time-chip" data-time-range="15m" onclick="setTimeRange('15m')">15m</button>
+      <button class="time-chip" data-time-range="30m" onclick="setTimeRange('30m')">30m</button>
+      <button class="time-chip active" data-time-range="1h" onclick="setTimeRange('1h')">1h</button>
+      <button class="time-chip" data-time-range="24h" onclick="setTimeRange('24h')">24h</button>
+      <button class="time-chip" data-time-range="7d" onclick="setTimeRange('7d')">7d</button>
+      <button class="time-chip" data-time-range="30d" onclick="setTimeRange('30d')">30d</button>
+      <button class="time-chip" data-time-range="all" onclick="setTimeRange('all')">All</button>
     </div>
-    <div class="filter-group"><label>Direction</label>
-      <select id="sort-dir"><option value="desc">Desc</option><option value="asc">Asc</option></select>
-    </div>
-    <div class="filter-actions">
-      <button class="btn btn-primary" onclick="loadStats()">Apply</button>
-      <button class="btn btn-ghost" onclick="resetFilters()">Reset</button>
+    <button class="btn btn-primary" id="open-filters" onclick="openStatsFilters()">Filters <span class="filter-count" id="filters-count" style="display:none">0</span></button>
+  </div>
+
+  <div class="modal-backdrop" id="stats-filter-modal" onclick="if(event.target===this)closeStatsFilters()">
+    <div class="modal stats-filter-modal" role="dialog" aria-modal="true" aria-labelledby="stats-filter-title">
+      <h3 id="stats-filter-title">Filters</h3>
+      <div class="filter-grid">
+        <div class="filter-group"><label>Agent</label><select id="f-agent"><option value="">All agents</option></select></div>
+        <div class="filter-group"><label>Session</label><select id="f-session"><option value="">All sessions</option></select></div>
+        <div class="filter-group"><label>Model</label><select id="f-model"><option value="">All models</option></select></div>
+        <div class="filter-group"><label>Sort by</label>
+          <select id="sort-by">
+            <option value="avg_composite">Avg Composite</option>
+            <option value="avg_effective_quality">Avg Quality</option>
+            <option value="avg_duration_ms">Avg Duration</option>
+            <option value="total_cost_usd">Total Cost</option>
+            <option value="runs">Runs</option>
+          </select>
+        </div>
+        <div class="filter-group"><label>Direction</label>
+          <select id="sort-dir"><option value="desc">Desc</option><option value="asc">Asc</option></select>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="resetFilters()">Reset</button>
+        <button class="btn btn-ghost" onclick="closeStatsFilters()">Cancel</button>
+        <button class="btn btn-primary" onclick="applyStatsFilters()">Apply filters</button>
+      </div>
     </div>
   </div>
 

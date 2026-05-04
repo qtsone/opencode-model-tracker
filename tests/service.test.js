@@ -17,7 +17,7 @@ import {
   configureServiceStorePathForTest,
   resetServiceStorePathForTest,
 } from "../src/service.js";
-import { initPerformanceStore } from "../src/store.js";
+import { appendPerformanceRecordOnce, initPerformanceStore } from "../src/store.js";
 
 // ─── Admin token / auth tests ─────────────────────────────────────────────────
 
@@ -173,24 +173,15 @@ test("OPTIONS preflight returns 403 with no CORS headers", async () => {
   }
 });
 
-// ─── Hardening: GET /api/health omits registry_path and store_path ───────────
+// ─── GET /api/health removed: expect 404 ─────────────────────────────────────
 
-test("GET /api/health omits registry_path and store_path", async () => {
-  const { url } = await startService({ port: 4798, adminToken: "health-test-token" });
+test("GET /api/health returns 404 after Health UI removal", async () => {
+  const { url } = await startService({ port: 4798, adminToken: "health-removed-token" });
   try {
     const res = await fetch(`${url}/api/health`);
-    assert.equal(res.status, 200, `Expected 200 from /api/health, got ${res.status}`);
+    assert.equal(res.status, 404, `Expected 404 from removed /api/health, got ${res.status}`);
     const body = await res.json();
-    assert.equal(body.status, "ok", "health response must have status: ok");
-    assert.ok(body.port, "health response must include port");
-    assert.ok(
-      !("registry_path" in body),
-      `GET /api/health must not expose registry_path but got: ${body.registry_path}`
-    );
-    assert.ok(
-      !("store_path" in body),
-      `GET /api/health must not expose store_path but got: ${body.store_path}`
-    );
+    assert.equal(body.error, "not found");
   } finally {
     await stopService();
   }
@@ -208,9 +199,6 @@ test("startService exposes adminToken on returned instance for same-origin UI em
 test("read-only GET endpoints remain accessible without token", async () => {
   const { url } = await startService({ port: 4797, adminToken: "readonly-test-token" });
   try {
-    const res = await fetch(`${url}/api/health`);
-    assert.equal(res.status, 200, "GET /api/health must not require auth");
-
     const res2 = await fetch(`${url}/api/registry`);
     assert.equal(res2.status, 200, "GET /api/registry must not require auth");
 
@@ -984,5 +972,103 @@ test("catch-all error handler returns generic message without leaking details", 
     );
   } finally {
     await stopService();
+  }
+});
+
+// ─── Helper: seed a performance record into a test sqlite store ───────────────
+
+async function seedPerformanceRecord(dbPath, id, timestamp, overrides = {}) {
+  await appendPerformanceRecordOnce({
+    id,
+    agent: overrides.agent ?? "backend-engineer",
+    source: overrides.source ?? "main",
+    session_id: overrides.session_id ?? `session-${id}`,
+    telemetry_session_id: overrides.telemetry_session_id ?? overrides.session_id ?? `session-${id}`,
+    message_id: overrides.message_id ?? `message-${id}`,
+    model_id: overrides.model_id ?? "openai/gpt-5.3-codex",
+    timestamp,
+    duration_ms: overrides.duration_ms ?? 1000,
+    cost_usd: overrides.cost_usd ?? 0,
+    tokens: overrides.tokens ?? { input: 10, cache_read: 0, cache_write: 0, output: 5 },
+    scores: overrides.scores ?? { composite: 0.7, effective_quality: 4 },
+  }, dbPath);
+}
+
+// ─── /api/stats time_range propagation ───────────────────────────────────────
+
+test("GET /api/stats without time_range defaults filters_applied.time_range to '1h'", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "service-stats-default-time-range-"));
+  const dbPath = join(dir, "model-performance.sqlite");
+  try {
+    await initPerformanceStore(dbPath);
+    configureServiceStorePathForTest(dbPath);
+    const { url } = await startService({ port: 4824, adminToken: "default-time-range-token" });
+    const res = await fetch(`${url}/api/stats`);
+    assert.equal(res.status, 200, `Expected 200, got ${res.status}`);
+    const body = await res.json();
+    assert.equal(
+      body.filters_applied.time_range,
+      "1h",
+      `Expected filters_applied.time_range to be '1h' when omitted from request, got '${body.filters_applied.time_range}'`
+    );
+  } finally {
+    await stopService();
+    resetServiceStorePathForTest();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("/api/stats applies time_range and preserves all-time filter options", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "service-stats-time-range-"));
+  const dbPath = join(dir, "model-performance.sqlite");
+  const now = Date.now();
+  try {
+    await initPerformanceStore(dbPath);
+    await seedPerformanceRecord(dbPath, "recent-service", new Date(now - 10 * 60 * 1000).toISOString(), { agent: "recent-agent" });
+    await seedPerformanceRecord(dbPath, "old-service", new Date(now - 2 * 60 * 60 * 1000).toISOString(), { agent: "old-agent" });
+    configureServiceStorePathForTest(dbPath);
+    const { url } = await startService({ port: 4822, adminToken: "stats-time-token" });
+    const res = await fetch(`${url}/api/stats?time_range=1h`);
+    assert.equal(res.status, 200, `Expected 200, got ${res.status}`);
+    const body = await res.json();
+    assert.equal(body.filters_applied.time_range, "1h");
+    assert.equal(body.total_records, 1);
+    assert.deepEqual(body.top_agents.map(a => a.name), ["recent-agent"]);
+    assert.deepEqual(body.filter_options.agents, ["old-agent", "recent-agent"]);
+  } finally {
+    await stopService();
+    resetServiceStorePathForTest();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("/api/stats/children applies time_range and secondary filters", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "service-children-time-range-"));
+  const dbPath = join(dir, "model-performance.sqlite");
+  const now = Date.now();
+  try {
+    await initPerformanceStore(dbPath);
+    await seedPerformanceRecord(dbPath, "recent-child-service", new Date(now - 10 * 60 * 1000).toISOString(), {
+      agent: "backend-engineer",
+      session_id: "scoped-child-session",
+      message_id: "recent-child-message",
+      model_id: "openai/gpt-5.3-codex",
+    });
+    await seedPerformanceRecord(dbPath, "old-child-service", new Date(now - 2 * 60 * 60 * 1000).toISOString(), {
+      agent: "backend-engineer",
+      session_id: "scoped-child-session",
+      message_id: "old-child-message",
+      model_id: "github-copilot/claude-sonnet-4.6",
+    });
+    configureServiceStorePathForTest(dbPath);
+    const { url } = await startService({ port: 4823, adminToken: "children-time-token" });
+    const res = await fetch(`${url}/api/stats/children?kind=session-requests&session_id=scoped-child-session&time_range=1h&agent=backend-engineer`);
+    assert.equal(res.status, 200, `Expected 200, got ${res.status}`);
+    const body = await res.json();
+    assert.deepEqual(body.rows.map(r => r.message_id), ["recent-child-message"]);
+  } finally {
+    await stopService();
+    resetServiceStorePathForTest();
+    rmSync(dir, { recursive: true, force: true });
   }
 });

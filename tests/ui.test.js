@@ -975,6 +975,8 @@ function makeHierarchyLevelEnv(parentLevel) {
     "document",
     `
     var _expandedRows = {};
+    var _timeRange = '1h';
+    function appendStatsScopeParams(params) {}
     function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
     function fmtTokens(v) { return v == null ? '—' : String(v); }
     function fmtUsd(v) { return v == null ? '—' : '$' + Number(v).toFixed(6); }
@@ -1310,4 +1312,94 @@ test("assignments table header error colspan is 6 not 5", () => {
     !src.includes('colspan="5"'),
     "loadAssignments error row must not use the old colspan=\"5\""
   );
+});
+
+// ─── Health UI removal and Stats default boot ─────────────────────────────────
+
+test("admin UI removes Health nav, page, script, and API references", () => {
+  assert.ok(!UI_HTML.includes('id="nav-health"'), "UI must not include Health nav link");
+  assert.ok(!UI_HTML.includes('id="page-health"'), "UI must not include Health page");
+  assert.ok(!SCRIPT.includes("function loadHealth("), "script must not define loadHealth");
+  assert.ok(!SCRIPT.includes("/api/health"), "script must not call /api/health");
+  assert.ok(!SCRIPT.includes("showPage('health')"), "script must not boot or route to Health");
+});
+
+test("admin UI boots to Stats by default", () => {
+  assert.ok(SCRIPT.includes("showPage('stats')"), "script must call showPage('stats') at startup");
+});
+
+// ─── Slice: Stats time chips and Filters modal ────────────────────────────────
+
+test("stats UI renders visible time range chips and defaults to 1h", () => {
+  assert.ok(UI_HTML.includes("stats-time-range"), "Stats page must include visible time range chip container");
+  for (const label of ["15m", "30m", "1h", "24h", "7d", "30d", "All"]) {
+    assert.ok(UI_HTML.includes(label), `Stats time chips must include ${label}`);
+  }
+  assert.ok(SCRIPT.includes("_timeRange = '1h'") || SCRIPT.includes('_timeRange = "1h"'), "script must initialize _timeRange to 1h");
+});
+
+test("stats secondary filters live in a modal opened by Filters button", () => {
+  assert.ok(UI_HTML.includes('id="stats-filter-modal"'), "UI must include stats filter modal");
+  assert.ok(UI_HTML.includes('id="open-filters"'), "UI must include Filters button");
+  assert.ok(UI_HTML.includes('id="filters-count"'), "Filters button must include count badge element");
+  assert.ok(UI_HTML.indexOf('id="stats-filter-modal"') < UI_HTML.indexOf('id="f-agent"'), "filter selects must be inside the modal markup");
+});
+
+test("loadStats sends time_range and active secondary filters", () => {
+  const src = extractFn("loadStats");
+  assert.ok(src.includes("appendStatsScopeParams"), "loadStats must use shared stats scope param helper");
+  assert.ok(src.includes("time_range"), "loadStats path must include time_range in query params");
+  assert.ok(src.includes("parent_page"), "loadStats must keep parent_page param");
+  assert.ok(src.includes("agent_page"), "loadStats must keep agent_page param");
+});
+
+test("toggleDashboardRow sends active stats scope to children endpoint", () => {
+  const src = extractFn("toggleDashboardRow");
+  assert.ok(src.includes("appendStatsScopeParams"), "toggleDashboardRow must append active time and secondary filters");
+  assert.ok(src.includes("/api/stats/children"), "toggleDashboardRow must call stats children endpoint");
+});
+
+test("script defines modal, time range, and expanded-row reset helpers", () => {
+  assert.ok(SCRIPT.includes("function setTimeRange("), "script must define setTimeRange");
+  assert.ok(SCRIPT.includes("function openStatsFilters("), "script must define openStatsFilters");
+  assert.ok(SCRIPT.includes("function closeStatsFilters("), "script must define closeStatsFilters");
+  assert.ok(SCRIPT.includes("function resetStatsViewState("), "script must define resetStatsViewState");
+  assert.ok(SCRIPT.includes("data-parent-key"), "reset helper must remove expanded child rows");
+});
+
+test("active secondary filter count excludes sort and direction", () => {
+  assert.ok(SCRIPT.includes("function activeSecondaryFilterCount("), "script must define activeSecondaryFilterCount");
+  const src = extractFn("activeSecondaryFilterCount");
+  assert.ok(src.includes("f-agent"), "count must inspect agent filter");
+  assert.ok(src.includes("f-session"), "count must inspect session filter");
+  assert.ok(src.includes("f-model"), "count must inspect model filter");
+  assert.ok(!src.includes("sort-by"), "count must not include sort by");
+  assert.ok(!src.includes("sort-dir"), "count must not include sort direction");
+});
+
+// ─── Code quality fixes ───────────────────────────────────────────────────────
+
+test("dead CSS rules .filter-bar and .filter-actions are removed from UI HTML", () => {
+  assert.ok(
+    !UI_HTML.includes(".filter-bar"),
+    "UI HTML must not include dead .filter-bar CSS rule (Stats page no longer uses that class)"
+  );
+  assert.ok(
+    !UI_HTML.includes(".filter-actions"),
+    "UI HTML must not include dead .filter-actions CSS rule (Stats page no longer uses that class)"
+  );
+});
+
+test("appendStatsScopeParams handles missing filter elements without throwing", () => {
+  const src = extractFn("appendStatsScopeParams");
+  const appendStatsScopeParams = new Function(
+    "document",
+    `var _timeRange = '7d';\n${src}\nreturn appendStatsScopeParams;`
+  )({ getElementById: () => null });
+  const params = new URLSearchParams();
+  assert.doesNotThrow(() => appendStatsScopeParams(params));
+  assert.equal(params.get("time_range"), "7d");
+  assert.equal(params.has("agent"), false);
+  assert.equal(params.has("session_id"), false);
+  assert.equal(params.has("model_id"), false);
 });
