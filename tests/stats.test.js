@@ -2,14 +2,16 @@
 import { strict as assert } from "assert";
 import { test } from "node:test";
 import {
+  buildBillableRuns,
+  estimateRecordCostUsd,
+} from "../src/ledger.js";
+import {
   applyFilters,
   computeFilterOptions,
   computeStats,
   computePerAgentModelStats,
   computeSessionStats,
-  estimateRecordCostUsd,
   buildStatsResponse,
-  buildBillableRuns,
   buildParentSessionDashboardRows,
   buildParentSessionChildren,
   buildRequestRowsForSession,
@@ -1102,6 +1104,64 @@ test("buildStatsResponse exposes dashboard parent and agent top-level rows", () 
   assert.ok(resp.dashboard.summary, "dashboard.summary must be present");
   assert.ok(typeof resp.dashboard.summary.total_tokens === "number", "dashboard.summary.total_tokens must be a number");
   assert.ok(typeof resp.dashboard.summary.total_cost_usd === "number", "dashboard.summary.total_cost_usd must be a number");
+});
+
+test("buildBillableRuns marks free registry runs as free cost source", () => {
+  const records = [{
+    id: "free-run-1",
+    agent: "backend-engineer",
+    source: "main",
+    session_id: "free-session",
+    telemetry_session_id: "free-session",
+    message_id: "msg-free-1",
+    model_id: "github-copilot/claude-sonnet-4.6",
+    timestamp: "2026-05-04T10:00:00Z",
+    cost_usd: 0,
+    tokens: { input: 1000, cache_read: 200, cache_write: 300, output: 400 },
+  }];
+
+  const [run] = buildBillableRuns(records, REGISTRY);
+
+  assert.equal(run.total_cost_usd, 0);
+  assert.equal(run.fresh_input_cost_usd, 0);
+  assert.equal(run.cached_input_cost_usd, 0);
+  assert.equal(run.cache_write_cost_usd, 0);
+  assert.equal(run.output_cost_usd, 0);
+  assert.equal(run.cost_source, "free");
+});
+
+test("buildRequestRowsForSession returns orphan session requests without parentSessionId", () => {
+  const rows = buildRequestRowsForSession(BRIDGE_RECORDS, REGISTRY, { sessionId: "orphan-sess" });
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].row_type, "request");
+  assert.equal(rows[0].message_id, "msg-orphan-1");
+  assert.equal(rows[0].run_id, "run:orphan-sess:::msg-orphan-1");
+  assert.equal(rows[0].child_query, undefined);
+});
+
+test("buildStatsResponse dashboard pagination uses row pagination shape", () => {
+  const resp = buildStatsResponse(BRIDGE_RECORDS, {}, REGISTRY);
+  const expectedKeys = ["has_next", "has_previous", "page", "page_size", "total_pages", "total_rows"];
+
+  assert.deepEqual(Object.keys(resp.dashboard.parent_sessions.pagination).sort(), expectedKeys);
+  assert.deepEqual(Object.keys(resp.dashboard.agents.pagination).sort(), expectedKeys);
+  assert.equal(resp.dashboard.parent_sessions.pagination.page, 1);
+  assert.equal(resp.dashboard.parent_sessions.pagination.page_size, 50);
+  assert.equal(resp.dashboard.parent_sessions.pagination.total_rows, 2);
+  assert.equal(resp.dashboard.agents.pagination.page, 1);
+  assert.equal(resp.dashboard.agents.pagination.page_size, 50);
+  assert.equal(resp.dashboard.agents.pagination.total_rows, 3);
+});
+
+test("buildStatsResponse and billable run ledger agree on bridge fixture total tokens", () => {
+  const resp = buildStatsResponse(BRIDGE_RECORDS, {}, REGISTRY);
+  const runs = buildBillableRuns(BRIDGE_RECORDS, REGISTRY);
+  const ledgerTotalTokens = runs.reduce((sum, run) => sum + run.total_tokens, 0);
+
+  assert.equal(ledgerTotalTokens, 203);
+  assert.equal(resp.tokens.total_tokens, ledgerTotalTokens);
+  assert.equal(resp.dashboard.summary.total_tokens, ledgerTotalTokens);
 });
 
 test("buildStatsResponse dashboard parent filter remains dedupe-safe", () => {
