@@ -1,5 +1,6 @@
 // src/registry.js
 import { readFileSync, writeFileSync, renameSync, unlinkSync, existsSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { isSafeAgentName } from "./sync.js";
 
 const REQUIRED_MODEL_FIELDS = ["provider", "name", "context_window", "cost", "strengths"];
@@ -39,7 +40,7 @@ export function loadRegistry(registryPath) {
  * @param {string} registryPath
  */
 export function saveRegistry(registry, registryPath) {
-  const tmp = registryPath + ".tmp";
+  const tmp = registryPath + "." + randomBytes(8).toString("hex") + ".tmp";
   try {
     writeFileSync(tmp, JSON.stringify(registry, null, 2) + "\n", "utf-8");
     renameSync(tmp, registryPath);

@@ -2,7 +2,7 @@
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import { parse as parseUrl } from "node:url";
-import { readFileSync, copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, copyFileSync, existsSync, mkdirSync, constants } from "node:fs";
 import { dirname } from "node:path";
 import { loadRegistry, saveRegistry, validateRegistry } from "./registry.js";
 import { buildStatsResponse, buildDashboardChildRows } from "./stats.js";
@@ -25,7 +25,7 @@ function seedRegistryIfAbsent(registryPath) {
   if (registryExists(registryPath)) return;
   try {
     mkdirSync(dirname(registryPath), { recursive: true });
-    copyFileSync(EXAMPLE_REGISTRY_PATH, registryPath);
+    copyFileSync(EXAMPLE_REGISTRY_PATH, registryPath, constants.COPYFILE_EXCL);
   } catch {
     // Non-fatal: the service will surface a useful error when the registry is
     // first accessed if the seed also fails.

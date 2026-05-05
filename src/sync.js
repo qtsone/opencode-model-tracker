@@ -1,6 +1,7 @@
 // src/sync.js
 import { readdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, realpathSync, statSync } from "node:fs";
 import { join, basename, resolve } from "node:path";
+import { randomBytes } from "node:crypto";
 
 /** Maximum allowed size for a custom agent markdown file (1 MiB). */
 const MAX_AGENT_FILE_SIZE = 1024 * 1024;
@@ -311,7 +312,8 @@ export function applyRegistryAssignments(assignments, agentDir, opencodePath, bu
 
     try {
       const updated = replaceModelLine(raw, model, filePath);
-      stagedCustom.push({ filePath, tmpPath: filePath + ".tmp", content: updated });
+      const tmpPath = filePath + "." + randomBytes(8).toString("hex") + ".tmp";
+      stagedCustom.push({ filePath, tmpPath, content: updated });
     } catch (err) {
       errors.push(err.message);
     }
@@ -339,7 +341,7 @@ export function applyRegistryAssignments(assignments, agentDir, opencodePath, bu
     }
   }
 
-  const ocTmpPath = opencodePath + ".tmp";
+  const ocTmpPath = opencodePath + "." + randomBytes(8).toString("hex") + ".tmp";
   const stagedBuiltin = builtinChanged
     ? [{ filePath: opencodePath, tmpPath: ocTmpPath, content: JSON.stringify(oc, null, 2) + "\n" }]
     : [];

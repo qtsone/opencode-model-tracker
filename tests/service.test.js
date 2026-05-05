@@ -19,6 +19,14 @@ import {
 } from "../src/service.js";
 import { appendPerformanceRecordOnce, initPerformanceStore } from "../src/store.js";
 
+
+const globalTestDir = mkdtempSync(join(tmpdir(), "service-tests-global-"));
+const globalPaths = {
+  registryPath: join(globalTestDir, "models.json"),
+  agentDir: join(globalTestDir, "agent"),
+  opencodePath: join(globalTestDir, "opencode.json"),
+};
+process.on("exit", () => rmSync(globalTestDir, { recursive: true, force: true }));
 // ─── Admin token / auth tests ─────────────────────────────────────────────────
 
 test("PUT /api/registry without token returns 401 and does not mutate", async () => {
@@ -28,7 +36,7 @@ test("PUT /api/registry without token returns 401 and does not mutate", async ()
     const original = { models: {}, agent_assignments: {}, ab_test_candidates: {} };
     writeFileSync(registryPath, JSON.stringify(original, null, 2));
 
-    const { url } = await startService({ port: 4790, adminToken: "test-token-put" });
+    const { url } = await startService({ port: 4790, adminToken: "test-token-put" , paths: globalPaths});
     const res = await fetch(`${url}/api/registry`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -48,7 +56,7 @@ test("PUT /api/registry without token returns 401 and does not mutate", async ()
 test("PUT /api/registry with wrong token returns 401 or 403 and does not mutate", async () => {
   const dir = mkdtempSync(join(tmpdir(), "service-auth-put-wrong-"));
   try {
-    const { url } = await startService({ port: 4791, adminToken: "correct-token" });
+    const { url } = await startService({ port: 4791, adminToken: "correct-token" , paths: globalPaths});
     const res = await fetch(`${url}/api/registry`, {
       method: "PUT",
       headers: {
@@ -84,7 +92,7 @@ test("PUT /api/registry with correct token succeeds", async () => {
     };
     writeFileSync(registryPath, JSON.stringify(original, null, 2));
 
-    const { url } = await startService({ port: 4792, adminToken: "good-token" });
+    const { url } = await startService({ port: 4792, adminToken: "good-token" , paths: globalPaths});
     const res = await fetch(`${url}/api/registry`, {
       method: "PUT",
       headers: {
@@ -104,7 +112,7 @@ test("PUT /api/registry with correct token succeeds", async () => {
 });
 
 test("POST /api/apply without token returns 401 or 403 and does not mutate", async () => {
-  const { url } = await startService({ port: 4793, adminToken: "test-token-apply" });
+  const { url } = await startService({ port: 4793, adminToken: "test-token-apply" , paths: globalPaths});
   try {
     const res = await fetch(`${url}/api/apply`, {
       method: "POST",
@@ -122,7 +130,7 @@ test("POST /api/apply without token returns 401 or 403 and does not mutate", asy
 });
 
 test("POST /api/apply with wrong token returns 401 or 403", async () => {
-  const { url } = await startService({ port: 4794, adminToken: "correct-apply-token" });
+  const { url } = await startService({ port: 4794, adminToken: "correct-apply-token" , paths: globalPaths});
   try {
     const res = await fetch(`${url}/api/apply`, {
       method: "POST",
@@ -145,7 +153,7 @@ test("POST /api/apply with wrong token returns 401 or 403", async () => {
 // ─── Hardening: OPTIONS returns 403, no CORS headers ─────────────────────────
 
 test("OPTIONS preflight returns 403 with no CORS headers", async () => {
-  const { url } = await startService({ port: 4795, adminToken: "cors-test-token" });
+  const { url } = await startService({ port: 4795, adminToken: "cors-test-token" , paths: globalPaths});
   try {
     const res = await fetch(`${url}/api/registry`, {
       method: "OPTIONS",
@@ -176,7 +184,7 @@ test("OPTIONS preflight returns 403 with no CORS headers", async () => {
 // ─── GET /api/health removed: expect 404 ─────────────────────────────────────
 
 test("GET /api/health returns 404 after Health UI removal", async () => {
-  const { url } = await startService({ port: 4798, adminToken: "health-removed-token" });
+  const { url } = await startService({ port: 4798, adminToken: "health-removed-token" , paths: globalPaths});
   try {
     const res = await fetch(`${url}/api/health`);
     assert.equal(res.status, 404, `Expected 404 from removed /api/health, got ${res.status}`);
@@ -188,7 +196,7 @@ test("GET /api/health returns 404 after Health UI removal", async () => {
 });
 
 test("startService exposes adminToken on returned instance for same-origin UI embedding", async () => {
-  const { url, adminToken } = await startService({ port: 4796, adminToken: "embed-test-token" });
+  const { url, adminToken } = await startService({ port: 4796, adminToken: "embed-test-token" , paths: globalPaths});
   try {
     assert.equal(adminToken, "embed-test-token", "startService must expose adminToken on instance");
   } finally {
@@ -197,7 +205,7 @@ test("startService exposes adminToken on returned instance for same-origin UI em
 });
 
 test("read-only GET endpoints remain accessible without token", async () => {
-  const { url } = await startService({ port: 4797, adminToken: "readonly-test-token" });
+  const { url } = await startService({ port: 4797, adminToken: "readonly-test-token" , paths: globalPaths});
   try {
     const res2 = await fetch(`${url}/api/registry`);
     assert.equal(res2.status, 200, "GET /api/registry must not require auth");
@@ -212,11 +220,11 @@ test("read-only GET endpoints remain accessible without token", async () => {
 test("startService reuses an already-started local service", async () => {
   const started = [];
   try {
-    const first = await startService({ port: 4780 });
+    const first = await startService({ port: 4780 , paths: globalPaths});
     started.push(first.server);
-    const second = await startService({ port: 4780 });
+    const second = await startService({ port: 4780 , paths: globalPaths});
     started.push(second.server);
-    const third = await startService({ port: 4780 });
+    const third = await startService({ port: 4780 , paths: globalPaths});
     started.push(third.server);
 
     assert.equal(second.url, first.url);
@@ -344,7 +352,7 @@ test("/api/stats uses sqlite records and ignores model-performance.json", async 
     configureServiceStorePathForTest(dbPath);
 
     // The sqlite db is empty; service must report 0 records.
-    const { url } = await startService({ port: 4782 });
+    const { url } = await startService({ port: 4782 , paths: globalPaths});
     const res = await fetch(`${url}/api/stats`);
     const body = await res.json();
 
@@ -365,7 +373,7 @@ test("/api/stats passes session_page, session_page_size, group_session_by to bui
     await initPerformanceStore(dbPath);
     configureServiceStorePathForTest(dbPath);
 
-    const { url } = await startService({ port: 4784 });
+    const { url } = await startService({ port: 4784 , paths: globalPaths});
     const res = await fetch(`${url}/api/stats?session_page=2&session_page_size=25&group_session_by=parent`);
     const body = await res.json();
 
@@ -391,7 +399,7 @@ test("/api/stats?session_page=1&session_page_size=5 limits per_session_stats row
     await init(dbPath);
     configureServiceStorePathForTest(dbPath);
 
-    const { url } = await startService({ port: 4785 });
+    const { url } = await startService({ port: 4785 , paths: globalPaths});
     const res = await fetch(`${url}/api/stats?session_page=1&session_page_size=5`);
     const body = await res.json();
 
@@ -464,7 +472,7 @@ test("applyAssignmentsForRequest leaves registry unchanged when agent file is mi
 // ─── Malformed JSON returns 400 on mutating endpoints ────────────────────────
 
 test("PUT /api/registry with valid token and malformed JSON body returns 400 with JSON error", async () => {
-  const { url } = await startService({ port: 4800, adminToken: "malformed-json-token" });
+  const { url } = await startService({ port: 4800, adminToken: "malformed-json-token" , paths: globalPaths});
   try {
     const res = await fetch(`${url}/api/registry`, {
       method: "PUT",
@@ -483,7 +491,7 @@ test("PUT /api/registry with valid token and malformed JSON body returns 400 wit
 });
 
 test("PUT /api/registry without token and malformed JSON body still returns 401 (auth checked before body)", async () => {
-  const { url } = await startService({ port: 4801, adminToken: "malformed-json-token-2" });
+  const { url } = await startService({ port: 4801, adminToken: "malformed-json-token-2" , paths: globalPaths});
   try {
     const res = await fetch(`${url}/api/registry`, {
       method: "PUT",
@@ -498,7 +506,7 @@ test("PUT /api/registry without token and malformed JSON body still returns 401 
 });
 
 test("POST /api/apply with valid token and malformed JSON body returns 400 with JSON error", async () => {
-  const { url } = await startService({ port: 4802, adminToken: "malformed-apply-token" });
+  const { url } = await startService({ port: 4802, adminToken: "malformed-apply-token" , paths: globalPaths});
   try {
     const res = await fetch(`${url}/api/apply`, {
       method: "POST",
@@ -517,7 +525,7 @@ test("POST /api/apply with valid token and malformed JSON body returns 400 with 
 });
 
 test("POST /api/apply without token and malformed JSON body still returns 401 (auth checked before body)", async () => {
-  const { url } = await startService({ port: 4804, adminToken: "malformed-apply-noauth-token" });
+  const { url } = await startService({ port: 4804, adminToken: "malformed-apply-noauth-token" , paths: globalPaths});
   try {
     const res = await fetch(`${url}/api/apply`, {
       method: "POST",
@@ -540,7 +548,7 @@ test("/api/stats?group_session_by=garbage normalizes to raw in filters_applied",
     await initPerformanceStore(dbPath);
     configureServiceStorePathForTest(dbPath);
 
-    const { url } = await startService({ port: 4803, adminToken: "groupby-norm-token" });
+    const { url } = await startService({ port: 4803, adminToken: "groupby-norm-token" , paths: globalPaths});
     const res = await fetch(`${url}/api/stats?group_session_by=garbage`);
     assert.equal(res.status, 200);
     const body = await res.json();
@@ -565,7 +573,7 @@ test("/api/stats returns performance_store_error for sqlite failures", async () 
     writeFileSync(blockerPath, "blocker");
     configureServiceStorePathForTest(invalidDbPath);
 
-    const { url } = await startService({ port: 4783 });
+    const { url } = await startService({ port: 4783 , paths: globalPaths});
     const res = await fetch(`${url}/api/stats`);
     const body = await res.json();
 
@@ -655,7 +663,7 @@ test("/api/stats exposes dashboard parent and agent rows", async () => {
     await initPerformanceStore(dbPath);
     configureServiceStorePathForTest(dbPath);
 
-    const { url } = await startService({ port: 4806, adminToken: "dashboard-test-token" });
+    const { url } = await startService({ port: 4806, adminToken: "dashboard-test-token" , paths: globalPaths});
     const res = await fetch(`${url}/api/stats`);
     assert.equal(res.status, 200, `Expected 200, got ${res.status}`);
     const body = await res.json();
@@ -680,7 +688,7 @@ test("/api/stats/children validates missing kind", async () => {
     await initPerformanceStore(dbPath);
     configureServiceStorePathForTest(dbPath);
 
-    const { url } = await startService({ port: 4807, adminToken: "children-test-token" });
+    const { url } = await startService({ port: 4807, adminToken: "children-test-token" , paths: globalPaths});
     const res = await fetch(`${url}/api/stats/children`);
     assert.equal(res.status, 400, `Expected 400 for missing kind, got ${res.status}`);
     const body = await res.json();
@@ -700,7 +708,7 @@ test("/api/stats/children?kind=evil returns 400 with static error message", asyn
     await initPerformanceStore(dbPath);
     configureServiceStorePathForTest(dbPath);
 
-    const { url } = await startService({ port: 4808, adminToken: "evil-kind-token" });
+    const { url } = await startService({ port: 4808, adminToken: "evil-kind-token" , paths: globalPaths});
     const res = await fetch(`${url}/api/stats/children?kind=evil`);
     assert.equal(res.status, 400, `Expected 400 for invalid kind 'evil', got ${res.status}`);
     const body = await res.json();
@@ -956,7 +964,7 @@ test("PUT /api/registry with valid token but invalid registry schema returns 400
 // ─── Hardening: generic internal server error in catch-all ───────────────────
 
 test("catch-all error handler returns generic message without leaking details", async () => {
-  const { url } = await startService({ port: 4809, adminToken: "generic-error-token" });
+  const { url } = await startService({ port: 4809, adminToken: "generic-error-token" , paths: globalPaths});
   try {
     // Trigger a 404 (the generic error path is for unhandled throws, but we
     // verify that the catch-all on the server level returns a JSON body)
@@ -1002,7 +1010,7 @@ test("GET /api/stats without time_range defaults filters_applied.time_range to '
   try {
     await initPerformanceStore(dbPath);
     configureServiceStorePathForTest(dbPath);
-    const { url } = await startService({ port: 4824, adminToken: "default-time-range-token" });
+    const { url } = await startService({ port: 4824, adminToken: "default-time-range-token" , paths: globalPaths});
     const res = await fetch(`${url}/api/stats`);
     assert.equal(res.status, 200, `Expected 200, got ${res.status}`);
     const body = await res.json();
@@ -1027,7 +1035,7 @@ test("/api/stats applies time_range and preserves all-time filter options", asyn
     await seedPerformanceRecord(dbPath, "recent-service", new Date(now - 10 * 60 * 1000).toISOString(), { agent: "recent-agent" });
     await seedPerformanceRecord(dbPath, "old-service", new Date(now - 2 * 60 * 60 * 1000).toISOString(), { agent: "old-agent" });
     configureServiceStorePathForTest(dbPath);
-    const { url } = await startService({ port: 4822, adminToken: "stats-time-token" });
+    const { url } = await startService({ port: 4822, adminToken: "stats-time-token" , paths: globalPaths});
     const res = await fetch(`${url}/api/stats?time_range=1h`);
     assert.equal(res.status, 200, `Expected 200, got ${res.status}`);
     const body = await res.json();
@@ -1061,7 +1069,7 @@ test("/api/stats/children applies time_range and secondary filters", async () =>
       model_id: "github-copilot/claude-sonnet-4.6",
     });
     configureServiceStorePathForTest(dbPath);
-    const { url } = await startService({ port: 4823, adminToken: "children-time-token" });
+    const { url } = await startService({ port: 4823, adminToken: "children-time-token" , paths: globalPaths});
     const res = await fetch(`${url}/api/stats/children?kind=session-requests&session_id=scoped-child-session&time_range=1h&agent=backend-engineer`);
     assert.equal(res.status, 200, `Expected 200, got ${res.status}`);
     const body = await res.json();
