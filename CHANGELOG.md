@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.1](https://github.com/qtsone/opencode-model-tracker/compare/v1.2.0...v1.2.1) (2026-05-05)
+
+
+### Bug Fixes
+
+* **service:** prevent registry resets during startup and tests ([1f2c95a](https://github.com/qtsone/opencode-model-tracker/commit/1f2c95a3ed6daa97bcc6eaa0b09af327a35379a3))
+
 # [1.2.0](https://github.com/qtsone/opencode-model-tracker/compare/v1.1.0...v1.2.0) (2026-05-04)
 
 

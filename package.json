@@ -1,6 +1,6 @@
 {
   "name": "opencode-model-tracker",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "OpenCode plugin for tracking model, agent, token, cost, and quality metrics locally.",
   "type": "module",
   "license": "MIT",
